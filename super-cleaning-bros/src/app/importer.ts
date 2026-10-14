@@ -83,9 +83,10 @@ function addressFrom(record: Record<string, string>) {
   };
 }
 
-function mapStatus(value: string): "scheduled" | "in_progress" | "done" | "skip" {
+function mapStatus(value: string): "scheduled" | "on_my_way" | "in_progress" | "done" | "skip" {
   const status = value.trim().toLowerCase().replace(/\s+/g, "_");
   if (status === "cancelled" || status === "canceled") return "skip";
+  if (status === "on_my_way" || status === "onmyway" || status === "omw") return "on_my_way";
   if (status === "in_progress" || status === "inprogress") return "in_progress";
   if (status === "done" || status === "completed" || status === "complete") return "done";
   return "scheduled";

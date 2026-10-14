@@ -7,7 +7,7 @@ import { assertOffice } from "../app/actors.ts";
 import type { Ctx } from "../app/context.ts";
 import type { AddressDraft } from "../app/validate.ts";
 
-const STATUS_TAGS = ["scb-job-scheduled", "scb-job-in-progress", "scb-job-done"] as const;
+const STATUS_TAGS = ["scb-job-scheduled", "scb-job-on-my-way", "scb-job-in-progress", "scb-job-done"] as const;
 
 export async function pushContact(
   ctx: Ctx,
@@ -145,12 +145,14 @@ export function existingDuplicate(
 }
 
 function statusTag(status: string): string {
+  if (status === "on_my_way") return "scb-job-on-my-way";
   if (status === "in_progress") return "scb-job-in-progress";
   if (status === "done") return "scb-job-done";
   return "scb-job-scheduled";
 }
 
 function label(status: string): string {
+  if (status === "on_my_way") return "on the way";
   if (status === "in_progress") return "in progress";
   if (status === "done") return "done";
   return "scheduled";
@@ -158,6 +160,7 @@ function label(status: string): string {
 
 function stageFor(ctx: Ctx, status: string): string | null {
   if (status === "scheduled") return ctx.config.ghl.stageScheduled;
+  if (status === "on_my_way") return ctx.config.ghl.stageOnMyWay;
   if (status === "in_progress") return ctx.config.ghl.stageInProgress;
   if (status === "done") return ctx.config.ghl.stageDone;
   return null;

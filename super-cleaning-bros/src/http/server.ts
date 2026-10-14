@@ -27,7 +27,9 @@ import {
   updateCustomer,
 } from "../app/customers.ts";
 import { acceptEstimate, createEstimate, declineEstimate, listEstimates } from "../app/estimates.ts";
-import { addNote, addPhoto, createJob, getJob, listJobs, readPhoto, updateJob, updateJobPrice } from "../app/jobs.ts";
+import { addNote, addPhoto, createJob, decideChangeOrder, editNote, getJob, listJobs, listUnscheduled, readPhoto, sendJobMessage, updateJob, updateJobPrice } from "../app/jobs.ts";
+import { listTemplates, saveTemplates } from "../app/notify.ts";
+import { shareDocument, sharePhoto } from "./share.ts";
 import { chargeInvoice, createCardSetup, createInvoice, handleStripeWebhook, saveCard } from "../app/billing.ts";
 import { businessReport } from "../app/reports.ts";
 import { importCustomers } from "../app/importer.ts";
@@ -73,9 +75,15 @@ const routes: Route[] = [
   { method: "POST", pattern: /^\/api\/jobs$/, access: "office", handler: async (ctx, _req, res, _params, body, _raw, actor) => sendJson(res, 201, await createJob(ctx, actor, body)) },
   { method: "GET", pattern: /^\/api\/jobs\/([^/]+)$/, access: "crew", handler: async (ctx, _req, res, params, _body, _raw, actor) => sendJson(res, 200, getJob(ctx, actor, params[0] ?? "")) },
   { method: "PATCH", pattern: /^\/api\/jobs\/([^/]+)$/, access: "crew", handler: async (ctx, _req, res, params, body, _raw, actor) => sendJson(res, 200, await updateJob(ctx, actor, params[0] ?? "", body)) },
-  { method: "PATCH", pattern: /^\/api\/jobs\/([^/]+)\/price$/, access: "office", handler: async (ctx, _req, res, params, body, _raw, actor) => sendJson(res, 200, updateJobPrice(ctx, actor, params[0] ?? "", body)) },
+  { method: "PATCH", pattern: /^\/api\/jobs\/([^/]+)\/price$/, access: "crew", handler: async (ctx, _req, res, params, body, _raw, actor) => sendJson(res, 200, updateJobPrice(ctx, actor, params[0] ?? "", body)) },
+  { method: "POST", pattern: /^\/api\/jobs\/([^/]+)\/change-orders\/([^/]+)\/approve$/, access: "office", handler: async (ctx, _req, res, params, _body, _raw, actor) => sendJson(res, 200, decideChangeOrder(ctx, actor, params[0] ?? "", params[1] ?? "", "approved")) },
+  { method: "POST", pattern: /^\/api\/jobs\/([^/]+)\/change-orders\/([^/]+)\/reject$/, access: "office", handler: async (ctx, _req, res, params, _body, _raw, actor) => sendJson(res, 200, decideChangeOrder(ctx, actor, params[0] ?? "", params[1] ?? "", "rejected")) },
   { method: "POST", pattern: /^\/api\/jobs\/([^/]+)\/notes$/, access: "crew", handler: async (ctx, _req, res, params, body, _raw, actor) => sendJson(res, 201, { note: addNote(ctx, actor, params[0] ?? "", body) }) },
-  { method: "POST", pattern: /^\/api\/jobs\/([^/]+)\/photos$/, access: "crew", handler: async (ctx, _req, res, params, body, _raw, actor) => sendJson(res, 201, { photo: addPhoto(ctx, actor, params[0] ?? "", body) }) },
+  { method: "PATCH", pattern: /^\/api\/jobs\/([^/]+)\/notes\/([^/]+)$/, access: "crew", handler: async (ctx, _req, res, params, body, _raw, actor) => sendJson(res, 200, { note: editNote(ctx, actor, params[0] ?? "", params[1] ?? "", body) }) },
+  { method: "POST", pattern: /^\/api\/jobs\/([^/]+)\/messages$/, access: "crew", handler: async (ctx, _req, res, params, body, _raw, actor) => sendJson(res, 201, { message: await sendJobMessage(ctx, actor, params[0] ?? "", body) }) },
+  { method: "GET", pattern: /^\/api\/message-templates$/, access: "office", handler: async (ctx, _req, res) => sendJson(res, 200, { templates: listTemplates(ctx) }) },
+  { method: "PUT", pattern: /^\/api\/message-templates$/, access: "office", handler: async (ctx, _req, res, _params, body) => sendJson(res, 200, { templates: saveTemplates(ctx, body) }) },
+  { method: "POST", pattern: /^\/api\/jobs\/([^/]+)\/photos$/, access: "crew", handler: async (ctx, _req, res, params, body, _raw, actor) => sendJson(res, 201, { photo: await addPhoto(ctx, actor, params[0] ?? "", body) }) },
   { method: "GET", pattern: /^\/api\/jobs\/([^/]+)\/photos\/([^/]+)$/, access: "crew", handler: photo },
   { method: "POST", pattern: /^\/api\/jobs\/([^/]+)\/invoice$/, access: "office", handler: async (ctx, _req, res, params, _body, _raw, actor) => sendJson(res, 201, await createInvoice(ctx, actor, params[0] ?? "")) },
   { method: "POST", pattern: /^\/api\/invoices\/([^/]+)\/charge$/, access: "office", handler: async (ctx, _req, res, params, _body, _raw, actor) => sendJson(res, 200, await chargeInvoice(ctx, actor, params[0] ?? "")) },
@@ -100,6 +108,10 @@ export function createHttpServer(ctx: Ctx) {
 async function dispatch(ctx: Ctx, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const method = req.method ?? "GET";
+  if (method === "GET" && url.pathname.startsWith("/share/")) {
+    await serveShare(ctx, res, url.pathname);
+    return;
+  }
   if (method === "GET" && !url.pathname.startsWith("/api/")) {
     await serveStatic(res, url.pathname);
     return;
@@ -203,9 +215,39 @@ async function stripeWebhook(ctx: Ctx, req: IncomingMessage, res: ServerResponse
 }
 
 async function jobsList(ctx: Ctx, req: IncomingMessage, res: ServerResponse, _params: string[], _body: unknown, _raw: Buffer, actor: Actor): Promise<void> {
+  if (query(req, "unscheduled") === "1") {
+    sendJson(res, 200, { jobs: listUnscheduled(ctx, actor) });
+    return;
+  }
   const from = parseRangeStart(query(req, "from"), "From");
   const to = parseRangeStart(query(req, "to"), "To");
   sendJson(res, 200, { jobs: listJobs(ctx, actor, from, to) });
+}
+
+async function serveShare(ctx: Ctx, res: ServerResponse, pathname: string): Promise<void> {
+  const photoMatch = /^\/share\/([^/]+)\/photos\/([^/]+)$/.exec(pathname);
+  if (photoMatch) {
+    const file = sharePhoto(ctx, decodeURIComponent(photoMatch[1] ?? ""), decodeURIComponent(photoMatch[2] ?? ""));
+    if (!file.bytes || !file.contentType) {
+      sendJson(res, 404, { error: { code: "not_found", message: "Photo not found." } });
+      return;
+    }
+    res.writeHead(200, { "content-type": file.contentType, "cache-control": "private, max-age=3600", "content-length": file.bytes.byteLength });
+    res.end(file.bytes);
+    return;
+  }
+  const pageMatch = /^\/share\/([^/]+)$/.exec(pathname);
+  if (!pageMatch) {
+    sendJson(res, 404, { error: { code: "not_found", message: "That page is not in the app." } });
+    return;
+  }
+  const page = shareDocument(ctx, decodeURIComponent(pageMatch[1] ?? ""));
+  if (!page.html) {
+    sendJson(res, 404, { error: { code: "not_found", message: "That photo page was not found." } });
+    return;
+  }
+  res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store" });
+  res.end(page.html);
 }
 
 async function photo(ctx: Ctx, _req: IncomingMessage, res: ServerResponse, params: string[], _body: unknown, _raw: Buffer, actor: Actor): Promise<void> {

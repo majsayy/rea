@@ -7,6 +7,7 @@ import type { Actor } from "../app/actors.ts";
 import { saveCustomer } from "../app/customers.ts";
 import { createJob } from "../app/jobs.ts";
 import { addNote } from "../app/jobs.ts";
+import { recordInboundMessage } from "../app/notify.ts";
 
 const systemActor: Actor = { role: "system", name: "GoHighLevel" };
 
@@ -24,6 +25,17 @@ export async function handleGhlWebhook(ctx: Ctx, payload: unknown, receiptId: st
         detail: parsed.reason,
       });
       return { ignored: true, reason: parsed.reason };
+    }
+    if (parsed.kind === "message") {
+      const saved = await recordInboundMessage(ctx, parsed.message);
+      ctx.store.insertEvent({
+        direction: "inbound",
+        eventType: "message",
+        payload,
+        status: saved.jobId ? "processed" : "skipped",
+        detail: saved.jobId ?? "no local job for this contact",
+      });
+      return { jobId: saved.jobId, duplicate: saved.duplicate };
     }
     if (parsed.kind === "contact") {
       const contact = await hydrateContact(ctx, parsed.contact);

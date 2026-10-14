@@ -160,4 +160,79 @@ export function migrate(db: DatabaseSync): void {
       received_at TEXT NOT NULL
     );
   `);
+  addColumn(db, "ALTER TABLE jobs ADD COLUMN unscheduled INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "ALTER TABLE jobs ADD COLUMN arrival_start TEXT");
+  addColumn(db, "ALTER TABLE jobs ADD COLUMN arrival_end TEXT");
+  addColumn(db, "ALTER TABLE jobs ADD COLUMN access_notes TEXT");
+  addColumn(db, "ALTER TABLE jobs ADD COLUMN share_token TEXT");
+  addColumn(db, "ALTER TABLE job_notes ADD COLUMN visibility TEXT NOT NULL DEFAULT 'internal'");
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS jobs_share_token
+      ON jobs(share_token) WHERE share_token IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS jobs_unscheduled ON jobs(unscheduled);
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES jobs(id),
+      customer_id TEXT NOT NULL REFERENCES customers(id),
+      direction TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      body TEXT NOT NULL,
+      subject TEXT,
+      status TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      ghl_message_id TEXT,
+      ghl_conversation_id TEXT,
+      trigger_key TEXT NOT NULL,
+      detail TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS messages_customer ON messages(customer_id, created_at);
+    CREATE INDEX IF NOT EXISTS messages_job ON messages(job_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS message_templates (
+      key TEXT PRIMARY KEY,
+      channel TEXT NOT NULL,
+      subject TEXT,
+      body TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS change_orders (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES jobs(id),
+      author_name TEXT NOT NULL,
+      status TEXT NOT NULL,
+      customer_approved INTEGER NOT NULL,
+      previous_json TEXT NOT NULL,
+      next_json TEXT NOT NULL,
+      previous_total_cents INTEGER NOT NULL,
+      next_total_cents INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_by TEXT
+    );
+    CREATE INDEX IF NOT EXISTS change_orders_job ON change_orders(job_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES jobs(id),
+      actor_name TEXT NOT NULL,
+      action TEXT NOT NULL,
+      detail TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS audit_log_job ON audit_log(job_id, created_at);
+  `);
+}
+
+function addColumn(db: DatabaseSync, sql: string): void {
+  try {
+    db.exec(sql);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("duplicate column")) return;
+    throw error;
+  }
 }

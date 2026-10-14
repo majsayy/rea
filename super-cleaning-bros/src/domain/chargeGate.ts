@@ -1,5 +1,7 @@
+import type { JobStatus } from "./types.ts";
+
 export type ChargeJobState = {
-  status: "scheduled" | "in_progress" | "done";
+  status: JobStatus;
   postWalkthroughComplete: boolean;
   beforePhotos: number;
   afterPhotos: number;

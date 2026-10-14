@@ -26,6 +26,19 @@ export type GhlContactWrite = {
   postalCode: string | null;
 };
 
+export type GhlOutboundMessage = {
+  contactId: string;
+  channel: "sms" | "email";
+  message: string;
+  subject: string | null;
+  emailFrom: string | null;
+};
+
+export type GhlMessageResult = {
+  messageId: string | null;
+  conversationId: string | null;
+};
+
 export interface GhlClient {
   upsertContact(input: GhlContactWrite): Promise<IncomingContact>;
   getContact(id: string): Promise<IncomingContact | null>;
@@ -33,6 +46,8 @@ export interface GhlClient {
   addTags(contactId: string, tags: string[]): Promise<void>;
   removeTags(contactId: string, tags: string[]): Promise<void>;
   updateOpportunityStage(opportunityId: string, pipelineStageId: string): Promise<void>;
+  sendConversationMessage(input: GhlOutboundMessage): Promise<GhlMessageResult>;
+  setCustomField(contactId: string, fieldId: string, value: string): Promise<void>;
 }
 
 export class HttpGhlClient implements GhlClient {
@@ -100,6 +115,31 @@ export class HttpGhlClient implements GhlClient {
     });
   }
 
+  async sendConversationMessage(input: GhlOutboundMessage): Promise<GhlMessageResult> {
+    const payload: Record<string, string> =
+      input.channel === "email"
+        ? {
+            type: "Email",
+            contactId: input.contactId,
+            subject: input.subject ?? "Super Cleaning Bros",
+            html: `<p>${escapeHtml(input.message)}</p>`,
+            emailFrom: input.emailFrom ?? "",
+          }
+        : {
+            type: "SMS",
+            contactId: input.contactId,
+            message: input.message,
+          };
+    const response = await this.request("POST", "/conversations/messages", payload);
+    return readMessageResult(response);
+  }
+
+  async setCustomField(contactId: string, fieldId: string, value: string): Promise<void> {
+    await this.request("PUT", `/contacts/${encodeURIComponent(contactId)}`, {
+      customFields: [{ id: fieldId, field_value: value }],
+    });
+  }
+
   private body(input: GhlContactWrite): Record<string, string> {
     const phone = normalizePhone(input.phone);
     const payload: Record<string, string> = {
@@ -146,6 +186,30 @@ export class HttpGhlClient implements GhlClient {
     if (!text) return null;
     return JSON.parse(text) as unknown;
   }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function readMessageResult(payload: unknown): GhlMessageResult {
+  if (!isRecord(payload)) return { messageId: null, conversationId: null };
+  const message = isRecord(payload.message) ? payload.message : payload;
+  return {
+    messageId: stringId(message, ["messageId", "id"]),
+    conversationId: stringId(message, ["conversationId"]) ?? stringId(payload, ["conversationId"]),
+  };
+}
+
+function stringId(record: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
 }
 
 function unwrapContact(payload: unknown): unknown {

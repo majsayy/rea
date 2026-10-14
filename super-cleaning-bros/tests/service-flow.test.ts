@@ -128,9 +128,9 @@ describe("office job flow", () => {
       assert.equal(job.job.priceLocked, true);
       assert.equal(job.job.totalCents, 18_000);
       assert.equal(job.job.scheduledStart, "2026-10-20T15:00:00.000Z");
-      assert.throws(() => updateJobPrice(ctx, office, job.job.id, { serviceCents: 30_000 }), (error: unknown) => {
-        return error instanceof AppError && error.code === "price_locked";
-      });
+      const proposed = updateJobPrice(ctx, office, job.job.id, { serviceCents: 30_000 });
+      assert.equal(proposed.job.totalCents, 18_000);
+      assert.equal(proposed.changeOrder.status, "pending");
 
       await updateJob(ctx, office, job.job.id, { status: "in_progress" });
       await updateJob(ctx, office, job.job.id, { status: "done" });
@@ -150,8 +150,8 @@ describe("office job flow", () => {
       });
       assert.equal(payments.charges.length, 0);
 
-      addPhoto(ctx, office, job.job.id, { kind: "before", contentType: "image/png", dataBase64: png });
-      addPhoto(ctx, office, job.job.id, { kind: "after", contentType: "image/png", dataBase64: png });
+      await addPhoto(ctx, office, job.job.id, { kind: "before", contentType: "image/png", dataBase64: png });
+      await addPhoto(ctx, office, job.job.id, { kind: "after", contentType: "image/png", dataBase64: png });
       const paid = await chargeInvoice(ctx, office, invoice.invoice.id);
       assert.equal(paid.payment.status, "succeeded");
       assert.equal(listJobs(ctx, office, "2026-10-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z")[0]?.invoice?.status, "paid");

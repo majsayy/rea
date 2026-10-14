@@ -24,14 +24,30 @@ export type IncomingBooking = {
   addressLine: string | null;
 };
 
+export type IncomingMessage = {
+  contactId: string;
+  body: string;
+  messageId: string | null;
+  conversationId: string | null;
+  channel: "sms" | "email";
+};
+
 export type ParsedGhlEvent =
   | { kind: "contact"; contact: IncomingContact }
   | { kind: "booking"; booking: IncomingBooking }
+  | { kind: "message"; message: IncomingMessage }
   | { kind: "ignore"; reason: string };
 
 export function parseGhlWebhook(payload: unknown): ParsedGhlEvent {
   if (!isRecord(payload)) return { kind: "ignore", reason: "payload was not an object" };
   const name = eventName(payload);
+  if (name.includes("message") || name.includes("conversation")) {
+    const direction = (stringField(payload, ["direction"]) ?? "").toLowerCase();
+    if (direction.includes("outbound")) return { kind: "ignore", reason: "outbound echo" };
+    const message = readInboundMessage(payload);
+    if (!message) return { kind: "ignore", reason: "message payload had no contact or body" };
+    return { kind: "message", message };
+  }
   if (name.includes("contact") && !name.includes("delete")) {
     const contact = readContact(payload.contact ?? payload);
     if (!contact) return { kind: "ignore", reason: "contact payload had no id or name" };
@@ -77,6 +93,30 @@ export function readContact(value: unknown): IncomingContact | null {
     city,
     state,
     postalCode,
+  };
+}
+
+export function readInboundMessage(body: Record<string, unknown>): IncomingMessage | null {
+  const nested = isRecord(body.message) ? body.message : body;
+  const contactId =
+    stringField(body, ["contactId", "contact_id"]) ??
+    (isRecord(body.contact) ? stringField(body.contact, ["id"]) : null) ??
+    stringField(nested, ["contactId", "contact_id"]);
+  const text =
+    stringField(nested, ["body", "message", "text", "messageBody"]) ??
+    stringField(body, ["body", "message", "text"]);
+  if (!contactId || !text) return null;
+  const channelName = (
+    stringField(nested, ["messageType", "type"]) ??
+    stringField(body, ["messageType", "type"]) ??
+    ""
+  ).toLowerCase();
+  return {
+    contactId,
+    body: text,
+    messageId: stringField(nested, ["messageId", "id"]) ?? stringField(body, ["messageId"]),
+    conversationId: stringField(nested, ["conversationId"]) ?? stringField(body, ["conversationId"]),
+    channel: channelName.includes("email") ? "email" : "sms",
   };
 }
 

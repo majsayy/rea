@@ -1,5 +1,5 @@
 export type ReportJob = {
-  status: "scheduled" | "in_progress" | "done";
+  status: "scheduled" | "on_my_way" | "in_progress" | "done";
   totalCents: number;
   travelFeeCents: number;
 };
@@ -16,7 +16,7 @@ export type ReportInvoice = {
 
 export type BusinessReport = {
   jobs: number;
-  jobsByStatus: { scheduled: number; in_progress: number; done: number };
+  jobsByStatus: { scheduled: number; on_my_way: number; in_progress: number; done: number };
   scheduledValueCents: number;
   completedValueCents: number;
   travelFeesCents: number;
@@ -30,7 +30,7 @@ export function buildReport(input: {
   payments: readonly ReportPayment[];
   invoices: readonly ReportInvoice[];
 }): BusinessReport {
-  const jobsByStatus = { scheduled: 0, in_progress: 0, done: 0 };
+  const jobsByStatus = { scheduled: 0, on_my_way: 0, in_progress: 0, done: 0 };
   let scheduledValueCents = 0;
   let completedValueCents = 0;
   let travelFeesCents = 0;

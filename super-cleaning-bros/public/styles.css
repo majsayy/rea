@@ -120,6 +120,7 @@ p { margin: 0; }
   display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px;
   font-size: 0.75rem; background: #e7f3ec; color: var(--pine-dark); text-transform: capitalize;
 }
+.status.on_my_way { background: #f3e6d4; color: #8a6230; }
 .status.in_progress, .status.progress { background: #fff1e8; color: var(--clay); }
 .status.done, .status.paid { background: #ecefee; color: #3d4741; }
 .status.issued, .status.draft { background: #fff4df; color: var(--brass); }
@@ -195,8 +196,13 @@ body:has(.field-app) { background: #d5ddd8; }
   display: grid; gap: 4px; width: 100%; text-align: left; padding: 12px;
   background: white; border: 1px solid var(--line); border-left: 4px solid var(--pine); border-radius: 12px;
 }
+.job-card.omw { border-left-color: #8a6230; }
 .job-card.progress { border-left-color: var(--clay); }
 .job-card.done { border-left-color: #9aa59d; }
+.job-card .card-open { display: grid; gap: 4px; width: 100%; background: transparent; border: 0; text-align: left; padding: 0; }
+.crew-actions, .crew-go { min-height: 48px; }
+.unscheduled { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; padding: 8px; background: #f7f4ef; border: 1px dashed #c8b39a; border-radius: 10px; }
+.map-link { text-decoration: none; display: inline-flex; align-items: center; }
 .field-main { display: grid; gap: 10px; padding-bottom: 84px; }
 .field-tabs {
   position: sticky; bottom: 0; display: grid; grid-template-columns: repeat(3, 1fr);

@@ -1,7 +1,9 @@
 import type { Address, Customer, Job, JobStatus, LineItem, SyncState } from "../domain/types.ts";
 import { chargeDecision } from "../domain/chargeGate.ts";
+import { planPriceChange } from "../domain/changeOrder.ts";
 import { AppError, isRecord } from "../domain/errors.ts";
-import { assertCents } from "../domain/money.ts";
+import { isJobStatus, NEXT_STATUS } from "../domain/jobStatus.ts";
+import { assertCents, formatCents } from "../domain/money.ts";
 import { applyAcceptedPrice } from "../domain/pricing.ts";
 import { splitAcceptedTotal, travelFeeForMinutes } from "../domain/travel.ts";
 import { parseAppTime } from "../domain/time.ts";
@@ -9,13 +11,8 @@ import type { Actor } from "./actors.ts";
 import { assertOffice, authorName } from "./actors.ts";
 import type { Ctx } from "./context.ts";
 import { pushJobStatus, requireAddress, requireCustomer } from "../ghl/outbound.ts";
-import { cleanMultiline, cleanText } from "./validate.ts";
-
-const NEXT_STATUS: Record<JobStatus, JobStatus[]> = {
-  scheduled: ["in_progress"],
-  in_progress: ["done", "scheduled"],
-  done: ["in_progress"],
-};
+import { notifyPhotos, notifyReschedule, notifyStatus, photoPageUrl, sendManualMessage, unscheduledWindow } from "./notify.ts";
+import { cleanMultiline, cleanText, optionalText } from "./validate.ts";
 
 const PHOTO_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
@@ -25,13 +22,18 @@ export async function createJob(ctx: Ctx, actor: Actor, body: unknown) {
   const customer = requireCustomer(ctx, String(body.customerId ?? ""));
   const address = requireAddress(ctx, String(body.addressId ?? ""), customer.id);
   const title = cleanText(body.title ?? "Cleaning", "Job title", 200);
-  const scheduledStart = parseAppTime(body.scheduledStart, "Start");
-  const scheduledEnd = body.scheduledEnd
-    ? parseAppTime(body.scheduledEnd, "End")
-    : new Date(new Date(scheduledStart).getTime() + 2 * 60 * 60 * 1000).toISOString();
+  const unscheduled = body.unscheduled === true;
+  const window = unscheduled ? unscheduledWindow() : null;
+  const scheduledStart = window ? window.scheduledStart : parseAppTime(body.scheduledStart, "Start");
+  const scheduledEnd = window
+    ? window.scheduledEnd
+    : body.scheduledEnd
+      ? parseAppTime(body.scheduledEnd, "End")
+      : new Date(new Date(scheduledStart).getTime() + 2 * 60 * 60 * 1000).toISOString();
   if (scheduledEnd <= scheduledStart) {
     throw new AppError("invalid_time", "The job must end after it starts.", 400);
   }
+  const arrival = readArrival(body.arrivalStart, body.arrivalEnd);
   const technicianIds = readIds(body.technicianIds);
   assertCrew(ctx, technicianIds);
   const priced = await priceNewJob(ctx, customer, address, {
@@ -58,6 +60,11 @@ export async function createJob(ctx: Ctx, actor: Actor, body: unknown) {
     postWalkthroughComplete: false,
     ghlOpportunityId: typeof body.ghlOpportunityId === "string" ? body.ghlOpportunityId : null,
     ghlAppointmentId: typeof body.ghlAppointmentId === "string" ? body.ghlAppointmentId : null,
+    unscheduled,
+    arrivalStart: arrival.start,
+    arrivalEnd: arrival.end,
+    accessNotes: optionalText(body.accessNotes, "Access notes", 2000),
+    shareToken: null,
     technicianIds,
     });
   } catch (error) {
@@ -78,7 +85,14 @@ export async function updateJob(ctx: Ctx, actor: Actor, id: string, body: unknow
   const current = requireJob(ctx, id);
   const technicianIds = ctx.store.assignmentIds(id);
   assertCanSee(actor, technicianIds);
-  const scheduling = body.title !== undefined || body.scheduledStart !== undefined || body.scheduledEnd !== undefined || body.technicianIds !== undefined;
+  const scheduling =
+    body.title !== undefined ||
+    body.scheduledStart !== undefined ||
+    body.scheduledEnd !== undefined ||
+    body.technicianIds !== undefined ||
+    body.unscheduled !== undefined ||
+    body.arrivalStart !== undefined ||
+    body.arrivalEnd !== undefined;
   if (scheduling && actor.role === "technician") {
     throw new AppError("forbidden", "Crew can update status, notes, and photos. Schedule changes belong in the office.", 403);
   }
@@ -91,10 +105,28 @@ export async function updateJob(ctx: Ctx, actor: Actor, id: string, body: unknow
   }
   const nextTechnicians = body.technicianIds === undefined ? technicianIds : readIds(body.technicianIds);
   if (body.technicianIds !== undefined) assertCrew(ctx, nextTechnicians);
-  const scheduledStart = body.scheduledStart === undefined ? current.scheduledStart : parseAppTime(body.scheduledStart, "Start");
-  const scheduledEnd = body.scheduledEnd === undefined ? current.scheduledEnd : parseAppTime(body.scheduledEnd, "End");
-  if (scheduledEnd <= scheduledStart) throw new AppError("invalid_time", "The job must end after it starts.", 400);
+  const unscheduled = body.unscheduled === undefined ? current.unscheduled : body.unscheduled === true;
+  const scheduledStart = unscheduled
+    ? unscheduledWindow().scheduledStart
+    : body.scheduledStart === undefined
+      ? current.scheduledStart
+      : parseAppTime(body.scheduledStart, "Start");
+  const scheduledEnd = unscheduled
+    ? unscheduledWindow().scheduledEnd
+    : body.scheduledEnd !== undefined
+      ? parseAppTime(body.scheduledEnd, "End")
+      : body.scheduledStart !== undefined && current.unscheduled
+        ? new Date(new Date(scheduledStart).getTime() + 2 * 60 * 60 * 1000).toISOString()
+        : current.scheduledEnd;
+  if (!unscheduled && scheduledEnd <= scheduledStart) {
+    throw new AppError("invalid_time", "The job must end after it starts.", 400);
+  }
   const title = body.title === undefined ? current.title : cleanText(body.title, "Job title", 200);
+  const arrival = readArrival(
+    body.arrivalStart === undefined ? current.arrivalStart : body.arrivalStart,
+    body.arrivalEnd === undefined ? current.arrivalEnd : body.arrivalEnd,
+  );
+  const accessNotes = body.accessNotes === undefined ? current.accessNotes : optionalText(body.accessNotes, "Access notes", 2000);
   let walkthrough = current.postWalkthroughComplete;
   if (body.postWalkthroughComplete !== undefined) {
     if (typeof body.postWalkthroughComplete !== "boolean") {
@@ -109,34 +141,111 @@ export async function updateJob(ctx: Ctx, actor: Actor, id: string, body: unknow
       scheduledEnd,
       status,
       postWalkthroughComplete: walkthrough,
+      unscheduled,
+      arrivalStart: arrival.start,
+      arrivalEnd: arrival.end,
+      accessNotes,
     });
     if (body.technicianIds !== undefined) ctx.store.replaceAssignments(id, nextTechnicians);
   });
-  const detail = jobDetail(ctx, actor, id);
+  let detail = jobDetail(ctx, actor, id);
   let sync: SyncState | undefined;
   if (status !== current.status) {
     sync = await pushJobStatus(ctx, jobSnapshot(detail), detail.customer, detail.address);
+    await notifyStatus(ctx, notifyTarget(detail), current.status, actor);
+    detail = jobDetail(ctx, actor, id);
+  }
+  const moved = !unscheduled && (scheduledStart !== current.scheduledStart || scheduledEnd !== current.scheduledEnd || current.unscheduled);
+  if (body.notifyCustomer === true && moved) {
+    await notifyReschedule(ctx, notifyTarget(detail), actor);
+    detail = jobDetail(ctx, actor, id);
   }
   return sync ? { ...detail, sync } : detail;
 }
 
 export function updateJobPrice(ctx: Ctx, actor: Actor, id: string, body: unknown) {
-  assertOffice(actor);
-  if (!isRecord(body) || typeof body.serviceCents !== "number") {
-    throw new AppError("invalid_amount", "Enter the service price in cents.", 400);
-  }
   const job = requireJob(ctx, id);
-  if (job.priceLocked) {
-    throw new AppError("price_locked", "This customer already accepted a price. The job keeps that price.", 409);
+  assertCanSee(actor, ctx.store.assignmentIds(id));
+  if (!isRecord(body)) throw new AppError("invalid_amount", "Enter the new line items.", 400);
+  const lineItems = readLineItems(body, job.title);
+  const customerApproved = body.customerApproved === true;
+  const reason = typeof body.reason === "string" && body.reason.trim() ? cleanText(body.reason, "Reason", 500) : "Price change";
+  const plan = planPriceChange({
+    priceLocked: job.priceLocked,
+    status: job.status,
+    customerApproved,
+    travelFeeCents: job.travelFeeCents,
+    nextLineItems: lineItems,
+  });
+  if (plan.mode === "apply") {
+    ctx.store.updateJobPrice(id, plan.next.serviceCents, plan.next.totalCents, plan.next.lineItems);
+    const order = ctx.store.insertChangeOrder({
+      jobId: id,
+      authorName: authorName(actor),
+      status: "applied",
+      customerApproved: plan.customerApproved,
+      previousLineItems: job.lineItems,
+      nextLineItems: plan.next.lineItems,
+      previousTotalCents: job.totalCents,
+      nextTotalCents: plan.next.totalCents,
+      reason,
+    });
+    ctx.store.resolveChangeOrder(id, order.id, "applied", authorName(actor));
+    ctx.store.insertAudit(
+      id,
+      authorName(actor),
+      plan.customerApproved ? "price.customer_approved" : "price.updated",
+      `${formatCents(job.totalCents)} → ${formatCents(plan.next.totalCents)}. ${reason}`,
+    );
+    return { ...jobDetail(ctx, actor, id), changeOrder: { ...order, status: "applied" as const, resolvedBy: authorName(actor) } };
   }
-  if (job.status !== "scheduled") {
-    throw new AppError("price_locked", "Change the price before the crew starts the job.", 409);
+  const order = ctx.store.insertChangeOrder({
+    jobId: id,
+    authorName: authorName(actor),
+    status: "pending",
+    customerApproved: false,
+    previousLineItems: job.lineItems,
+    nextLineItems: plan.next.lineItems,
+    previousTotalCents: job.totalCents,
+    nextTotalCents: plan.next.totalCents,
+    reason,
+  });
+  ctx.store.insertAudit(
+    id,
+    authorName(actor),
+    "price.change_order",
+    `Proposed ${formatCents(job.totalCents)} → ${formatCents(plan.next.totalCents)}. Waiting for office approval. ${reason}`,
+  );
+  return { ...jobDetail(ctx, actor, id), changeOrder: order };
+}
+
+export function decideChangeOrder(ctx: Ctx, actor: Actor, jobId: string, orderId: string, decision: "approved" | "rejected") {
+  assertOffice(actor);
+  const job = requireJob(ctx, jobId);
+  const order = ctx.store.getChangeOrder(jobId, orderId);
+  if (!order) throw new AppError("not_found", "Change order not found.", 404);
+  if (order.status !== "pending") throw new AppError("invalid_status", "That change order is already decided.", 409);
+  if (decision === "rejected") {
+    ctx.store.resolveChangeOrder(jobId, orderId, "rejected", authorName(actor));
+    ctx.store.insertAudit(jobId, authorName(actor), "price.rejected", `Rejected the change to ${formatCents(order.nextTotalCents)}.`);
+    return jobDetail(ctx, actor, jobId);
   }
-  const serviceCents = assertCents(body.serviceCents, "Service price");
-  ctx.store.updateJobPrice(id, serviceCents, serviceCents + job.travelFeeCents, [
-    { description: job.title, amountCents: serviceCents },
-  ]);
-  return jobDetail(ctx, actor, id);
+  const plan = planPriceChange({
+    priceLocked: false,
+    status: "scheduled",
+    customerApproved: false,
+    travelFeeCents: job.travelFeeCents,
+    nextLineItems: order.nextLineItems,
+  });
+  ctx.store.updateJobPrice(jobId, plan.next.serviceCents, plan.next.totalCents, plan.next.lineItems);
+  ctx.store.resolveChangeOrder(jobId, orderId, "approved", authorName(actor));
+  ctx.store.insertAudit(
+    jobId,
+    authorName(actor),
+    "price.approved",
+    `${formatCents(job.totalCents)} → ${formatCents(plan.next.totalCents)}.`,
+  );
+  return jobDetail(ctx, actor, jobId);
 }
 
 export function addNote(ctx: Ctx, actor: Actor, jobId: string, body: unknown) {
@@ -148,7 +257,20 @@ export function addNote(ctx: Ctx, actor: Actor, jobId: string, body: unknown) {
   return ctx.store.insertNote(jobId, authorName(actor), note);
 }
 
-export function addPhoto(ctx: Ctx, actor: Actor, jobId: string, body: unknown) {
+export function editNote(ctx: Ctx, actor: Actor, jobId: string, noteId: string, body: unknown) {
+  assertCanSee(actor, ctx.store.assignmentIds(jobId));
+  requireJob(ctx, jobId);
+  if (!isRecord(body)) throw new AppError("invalid_field", "Note text is required.", 400);
+  const text = cleanMultiline(body.body, "Note", 4000);
+  const updated = ctx.store.updateNote(jobId, noteId, text);
+  if (!updated) throw new AppError("not_found", "Note not found.", 404);
+  if (updated.previous !== text) {
+    ctx.store.insertAudit(jobId, authorName(actor), "note.edit", `${updated.previous} → ${text}`);
+  }
+  return updated.note;
+}
+
+export async function addPhoto(ctx: Ctx, actor: Actor, jobId: string, body: unknown) {
   const technicianIds = ctx.store.assignmentIds(jobId);
   requireJob(ctx, jobId);
   assertCanSee(actor, technicianIds);
@@ -166,17 +288,19 @@ export function addPhoto(ctx: Ctx, actor: Actor, jobId: string, body: unknown) {
   }
   const bytes = decodePhoto(body.dataBase64);
   const photo = ctx.store.insertPhoto(jobId, kind, contentType, bytes);
+  const job = requireJob(ctx, jobId);
   if (kind === "walkthrough") {
-    const job = requireJob(ctx, jobId);
-    ctx.store.updateJobSchedule(jobId, {
-      title: job.title,
-      scheduledStart: job.scheduledStart,
-      scheduledEnd: job.scheduledEnd,
-      status: job.status,
-      postWalkthroughComplete: true,
-    });
+    ctx.store.updateJobSchedule(jobId, scheduleOf(job, true));
   }
-  return photo;
+  const detail = jobDetail(ctx, actor, jobId);
+  const notification = await notifyPhotos(ctx, notifyTarget(detail), actor);
+  return { ...photo, notification };
+}
+
+export async function sendJobMessage(ctx: Ctx, actor: Actor, jobId: string, body: unknown) {
+  assertCanSee(actor, ctx.store.assignmentIds(jobId));
+  const detail = jobDetail(ctx, actor, jobId);
+  return sendManualMessage(ctx, notifyTarget(detail), actor, body);
 }
 
 export function readPhoto(ctx: Ctx, actor: Actor, jobId: string, photoId: string) {
@@ -191,8 +315,16 @@ export function getJob(ctx: Ctx, actor: Actor, id: string) {
   return jobDetail(ctx, actor, id);
 }
 
+export function listUnscheduled(ctx: Ctx, actor: Actor) {
+  return presentJobs(ctx, actor, ctx.store.listUnscheduled());
+}
+
 export function listJobs(ctx: Ctx, actor: Actor, from: string, to: string) {
-  const rows = ctx.store.listJobs(from, to).flatMap((job) => {
+  return presentJobs(ctx, actor, ctx.store.listJobs(from, to));
+}
+
+function presentJobs(ctx: Ctx, actor: Actor, jobs: Job[]) {
+  const rows = jobs.flatMap((job) => {
     const technicianIds = ctx.store.assignmentIds(job.id);
     if (actor.role === "technician" && !technicianIds.includes(actor.technicianId)) return [];
     return [{ job, technicianIds }];
@@ -312,6 +444,10 @@ function jobDetail(ctx: Ctx, actor: Actor, id: string) {
     technicians: ctx.store.listTechnicians().filter((technician) => technicianIds.includes(technician.id)),
     notes: ctx.store.listNotes(id),
     photos: ctx.store.listPhotoMeta(id),
+    thread: threadFor(ctx, customer.id),
+    changeOrders: ctx.store.listChangeOrders(id),
+    audit: ctx.store.listAudit(id),
+    photoUrl: job.shareToken ? photoPageUrl(ctx, job.shareToken) : null,
     invoice: ctx.store.latestInvoiceForJob(id),
     cardOnFile: card !== null,
     charge: chargeDecision({
@@ -321,6 +457,37 @@ function jobDetail(ctx: Ctx, actor: Actor, id: string) {
       afterPhotos,
       hasCard: card !== null,
     }),
+  };
+}
+
+function threadFor(ctx: Ctx, customerId: string) {
+  const titles = new Map(ctx.store.jobsForCustomer(customerId).map((job) => [job.id, job.title]));
+  return ctx.store.listMessagesForCustomer(customerId).map((message) => ({
+    ...message,
+    jobTitle: titles.get(message.jobId) ?? "Job",
+  }));
+}
+
+function notifyTarget(detail: ReturnType<typeof jobDetail>) {
+  return {
+    job: detail.job,
+    customer: detail.customer,
+    address: detail.address,
+    technicianIds: detail.technicianIds,
+  };
+}
+
+function scheduleOf(job: Job, walkthrough: boolean) {
+  return {
+    title: job.title,
+    scheduledStart: job.scheduledStart,
+    scheduledEnd: job.scheduledEnd,
+    status: job.status,
+    postWalkthroughComplete: walkthrough,
+    unscheduled: job.unscheduled,
+    arrivalStart: job.arrivalStart,
+    arrivalEnd: job.arrivalEnd,
+    accessNotes: job.accessNotes,
   };
 }
 
@@ -363,8 +530,34 @@ function readIds(value: unknown): string[] {
 }
 
 function readStatus(value: unknown): JobStatus {
-  if (value === "scheduled" || value === "in_progress" || value === "done") return value;
-  throw new AppError("invalid_status", "Status must be scheduled, in progress, or done.", 400);
+  if (isJobStatus(value)) return value;
+  throw new AppError("invalid_status", "Status must be scheduled, on my way, in progress, or done.", 400);
+}
+
+function readArrival(start: unknown, end: unknown): { start: string | null; end: string | null } {
+  const arrivalStart = start === undefined || start === null || start === "" ? null : parseAppTime(start, "Arrival start");
+  const arrivalEnd = end === undefined || end === null || end === "" ? null : parseAppTime(end, "Arrival end");
+  if (arrivalStart && arrivalEnd && arrivalEnd <= arrivalStart) {
+    throw new AppError("invalid_time", "The arrival window must end after it starts.", 400);
+  }
+  return { start: arrivalStart, end: arrivalEnd };
+}
+
+function readLineItems(body: Record<string, unknown>, title: string): LineItem[] {
+  if (Array.isArray(body.lineItems)) {
+    if (body.lineItems.length === 0) throw new AppError("invalid_amount", "Add at least one line item.", 400);
+    return body.lineItems.map((item) => {
+      if (!isRecord(item)) throw new AppError("invalid_amount", "Each line item needs a description and amount.", 400);
+      return {
+        description: cleanText(item.description, "Line item", 200),
+        amountCents: assertCents(typeof item.amountCents === "number" ? item.amountCents : NaN, "Line item"),
+      };
+    });
+  }
+  if (typeof body.serviceCents === "number") {
+    return [{ description: title, amountCents: assertCents(body.serviceCents, "Service price") }];
+  }
+  throw new AppError("invalid_amount", "Enter the service price in cents.", 400);
 }
 
 function readInitialStatus(value: unknown): JobStatus {

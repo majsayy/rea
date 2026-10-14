@@ -2,14 +2,18 @@ import type { DatabaseSync } from "node:sqlite";
 
 import type {
   Address,
+  AuditEntry,
   CardOnFile,
+  ChangeOrder,
   Customer,
+  CustomerMessage,
   Estimate,
   Invoice,
   Job,
   JobNote,
   JobStatus,
   LineItem,
+  MessageTemplate,
   Payment,
   PhotoKind,
   PhotoMeta,
@@ -376,6 +380,11 @@ export class Store {
       postWalkthroughComplete: input.postWalkthroughComplete,
       ghlOpportunityId: input.ghlOpportunityId,
       ghlAppointmentId: input.ghlAppointmentId,
+      unscheduled: input.unscheduled,
+      arrivalStart: input.arrivalStart,
+      arrivalEnd: input.arrivalEnd,
+      accessNotes: input.accessNotes,
+      shareToken: input.shareToken,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -383,8 +392,9 @@ export class Store {
       `INSERT INTO jobs (
         id, customer_id, address_id, estimate_id, title, scheduled_start, scheduled_end, status,
         price_locked, service_cents, travel_fee_cents, total_cents, line_items_json, post_walkthrough,
-        ghl_opportunity_id, ghl_appointment_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ghl_opportunity_id, ghl_appointment_id, unscheduled, arrival_start, arrival_end, access_notes,
+        share_token, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       job.id,
       job.customerId,
       job.addressId,
@@ -401,6 +411,11 @@ export class Store {
       job.postWalkthroughComplete ? 1 : 0,
       job.ghlOpportunityId,
       job.ghlAppointmentId,
+      job.unscheduled ? 1 : 0,
+      job.arrivalStart,
+      job.arrivalEnd,
+      job.accessNotes,
+      job.shareToken,
       job.createdAt,
       job.updatedAt,
     );
@@ -433,20 +448,39 @@ export class Store {
       scheduledEnd: string;
       status: JobStatus;
       postWalkthroughComplete: boolean;
+      unscheduled: boolean;
+      arrivalStart: string | null;
+      arrivalEnd: string | null;
+      accessNotes: string | null;
     },
   ): void {
     this.run(
       `UPDATE jobs
-       SET title = ?, scheduled_start = ?, scheduled_end = ?, status = ?, post_walkthrough = ?, updated_at = ?
+       SET title = ?, scheduled_start = ?, scheduled_end = ?, status = ?, post_walkthrough = ?,
+           unscheduled = ?, arrival_start = ?, arrival_end = ?, access_notes = ?, updated_at = ?
        WHERE id = ?`,
       input.title,
       input.scheduledStart,
       input.scheduledEnd,
       input.status,
       input.postWalkthroughComplete ? 1 : 0,
+      input.unscheduled ? 1 : 0,
+      input.arrivalStart,
+      input.arrivalEnd,
+      input.accessNotes,
       this.stamp(),
       id,
     );
+  }
+
+  setShareToken(id: string, token: string): string | null {
+    this.run(
+      `UPDATE jobs SET share_token = ?, updated_at = ? WHERE id = ? AND share_token IS NULL`,
+      token,
+      this.stamp(),
+      id,
+    );
+    return this.getJob(id)?.shareToken ?? null;
   }
 
   updateJobPrice(id: string, serviceCents: number, totalCents: number, lineItems: LineItem[]): void {
@@ -477,10 +511,25 @@ export class Store {
 
   listJobs(fromIso: string, toIso: string): Job[] {
     return this.all(
-      `SELECT * FROM jobs WHERE scheduled_start >= ? AND scheduled_start < ? ORDER BY scheduled_start`,
+      `SELECT * FROM jobs
+       WHERE unscheduled = 0 AND scheduled_start >= ? AND scheduled_start < ?
+       ORDER BY scheduled_start`,
       fromIso,
       toIso,
     ).map(mapJob);
+  }
+
+  listUnscheduled(): Job[] {
+    return this.all(`SELECT * FROM jobs WHERE unscheduled = 1 ORDER BY created_at DESC`).map(mapJob);
+  }
+
+  jobsForCustomer(customerId: string): Job[] {
+    return this.all(`SELECT * FROM jobs WHERE customer_id = ? ORDER BY scheduled_start DESC`, customerId).map(mapJob);
+  }
+
+  findJobByShareToken(token: string): Job | null {
+    const row = this.get("SELECT * FROM jobs WHERE share_token = ?", token);
+    return row ? mapJob(row) : null;
   }
 
   insertNote(jobId: string, authorName: string, body: string): JobNote {
@@ -489,30 +538,33 @@ export class Store {
       jobId,
       authorName,
       body,
+      visibility: "internal",
       createdAt: this.stamp(),
     };
     this.run(
-      "INSERT INTO job_notes (id, job_id, author_name, body, created_at) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO job_notes (id, job_id, author_name, body, visibility, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       note.id,
       note.jobId,
       note.authorName,
       note.body,
+      note.visibility,
       note.createdAt,
     );
     return note;
+  }
+
+  updateNote(jobId: string, noteId: string, body: string): { previous: string; note: JobNote } | null {
+    const current = this.listNotes(jobId).find((note) => note.id === noteId);
+    if (!current) return null;
+    this.run("UPDATE job_notes SET body = ? WHERE id = ? AND job_id = ?", body, noteId, jobId);
+    return { previous: current.body, note: { ...current, body } };
   }
 
   listNotes(jobId: string): JobNote[] {
     return this.all(
       "SELECT * FROM job_notes WHERE job_id = ? ORDER BY created_at",
       jobId,
-    ).map((row) => ({
-      id: text(row, "id"),
-      jobId: text(row, "job_id"),
-      authorName: text(row, "author_name"),
-      body: text(row, "body"),
-      createdAt: text(row, "created_at"),
-    }));
+    ).map(mapNote);
   }
 
   insertPhoto(jobId: string, kind: PhotoKind, contentType: string, bytes: Buffer): PhotoMeta {
@@ -797,6 +849,228 @@ export class Store {
   deleteReceipt(id: string): void {
     this.run("DELETE FROM webhook_receipts WHERE id = ?", id);
   }
+
+  claimMessage(input: Omit<CustomerMessage, "id" | "createdAt" | "ghlMessageId" | "ghlConversationId" | "detail">): {
+    proceed: boolean;
+    message: CustomerMessage;
+  } {
+    const existing = this.messageByKey(input.idempotencyKey);
+    if (existing && (existing.status === "sent" || existing.status === "sending")) {
+      return { proceed: false, message: existing };
+    }
+    if (existing) {
+      this.run(
+        `UPDATE messages SET status = 'sending', body = ?, subject = ?, channel = ?, detail = NULL
+         WHERE id = ? AND status IN ('failed', 'skipped')`,
+        input.body,
+        input.subject,
+        input.channel,
+        existing.id,
+      );
+      const updated = this.getMessage(existing.id);
+      if (!updated || updated.status !== "sending") return { proceed: false, message: existing };
+      return { proceed: true, message: updated };
+    }
+    const message: CustomerMessage = {
+      ...input,
+      id: this.id(),
+      ghlMessageId: null,
+      ghlConversationId: null,
+      detail: null,
+      createdAt: this.stamp(),
+    };
+    try {
+      this.insertMessage(message);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("UNIQUE")) {
+        const raced = this.messageByKey(input.idempotencyKey);
+        if (raced) return { proceed: false, message: raced };
+      }
+      throw error;
+    }
+    return { proceed: true, message };
+  }
+
+  completeMessage(
+    id: string,
+    status: CustomerMessage["status"],
+    extra: { ghlMessageId: string | null; ghlConversationId: string | null; detail: string | null },
+  ): void {
+    this.run(
+      `UPDATE messages SET status = ?, ghl_message_id = ?, ghl_conversation_id = ?, detail = ? WHERE id = ?`,
+      status,
+      extra.ghlMessageId,
+      extra.ghlConversationId,
+      extra.detail,
+      id,
+    );
+  }
+
+  messageById(id: string): CustomerMessage | null {
+    return this.getMessage(id);
+  }
+
+  listMessagesForCustomer(customerId: string): CustomerMessage[] {
+    return this.all(
+      `SELECT * FROM messages WHERE customer_id = ? ORDER BY created_at`,
+      customerId,
+    ).map(mapMessage);
+  }
+
+  ensureTemplates(
+    defaults: ReadonlyArray<{ key: string; channel: "sms" | "email"; subject: string | null; body: string }>,
+  ): MessageTemplate[] {
+    for (const template of defaults) {
+      const existing = this.get("SELECT key FROM message_templates WHERE key = ?", template.key);
+      if (existing) continue;
+      this.run(
+        `INSERT INTO message_templates (key, channel, subject, body, updated_at) VALUES (?, ?, ?, ?, ?)`,
+        template.key,
+        template.channel,
+        template.subject,
+        template.body,
+        this.stamp(),
+      );
+    }
+    return this.listTemplates();
+  }
+
+  listTemplates(): MessageTemplate[] {
+    return this.all(`SELECT * FROM message_templates ORDER BY key`).map((row) => ({
+      key: text(row, "key"),
+      channel: text(row, "channel") === "email" ? "email" : "sms",
+      subject: textOrNull(row, "subject"),
+      body: text(row, "body"),
+      updatedAt: text(row, "updated_at"),
+    }));
+  }
+
+  saveTemplate(input: { key: string; channel: "sms" | "email"; subject: string | null; body: string }): void {
+    this.run(
+      `INSERT INTO message_templates (key, channel, subject, body, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET channel = excluded.channel, subject = excluded.subject, body = excluded.body, updated_at = excluded.updated_at`,
+      input.key,
+      input.channel,
+      input.subject,
+      input.body,
+      this.stamp(),
+    );
+  }
+
+  insertChangeOrder(input: Omit<ChangeOrder, "id" | "createdAt" | "resolvedAt" | "resolvedBy">): ChangeOrder {
+    const order: ChangeOrder = {
+      ...input,
+      id: this.id(),
+      createdAt: this.stamp(),
+      resolvedAt: null,
+      resolvedBy: null,
+    };
+    this.run(
+      `INSERT INTO change_orders (
+        id, job_id, author_name, status, customer_approved, previous_json, next_json,
+        previous_total_cents, next_total_cents, reason, created_at, resolved_at, resolved_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      order.id,
+      order.jobId,
+      order.authorName,
+      order.status,
+      order.customerApproved ? 1 : 0,
+      JSON.stringify(order.previousLineItems),
+      JSON.stringify(order.nextLineItems),
+      order.previousTotalCents,
+      order.nextTotalCents,
+      order.reason,
+      order.createdAt,
+      order.resolvedAt,
+      order.resolvedBy,
+    );
+    return order;
+  }
+
+  listChangeOrders(jobId: string): ChangeOrder[] {
+    return this.all(`SELECT * FROM change_orders WHERE job_id = ? ORDER BY created_at`, jobId).map(mapChangeOrder);
+  }
+
+  getChangeOrder(jobId: string, id: string): ChangeOrder | null {
+    const row = this.get(`SELECT * FROM change_orders WHERE job_id = ? AND id = ?`, jobId, id);
+    return row ? mapChangeOrder(row) : null;
+  }
+
+  resolveChangeOrder(jobId: string, id: string, status: ChangeOrder["status"], resolvedBy: string): void {
+    this.run(
+      `UPDATE change_orders SET status = ?, resolved_at = ?, resolved_by = ? WHERE job_id = ? AND id = ?`,
+      status,
+      this.stamp(),
+      resolvedBy,
+      jobId,
+      id,
+    );
+  }
+
+  insertAudit(jobId: string, actorName: string, action: string, detail: string): AuditEntry {
+    const entry: AuditEntry = {
+      id: this.id(),
+      jobId,
+      actorName,
+      action,
+      detail,
+      createdAt: this.stamp(),
+    };
+    this.run(
+      `INSERT INTO audit_log (id, job_id, actor_name, action, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      entry.id,
+      entry.jobId,
+      entry.actorName,
+      entry.action,
+      entry.detail,
+      entry.createdAt,
+    );
+    return entry;
+  }
+
+  listAudit(jobId: string): AuditEntry[] {
+    return this.all(`SELECT * FROM audit_log WHERE job_id = ? ORDER BY created_at`, jobId).map((row) => ({
+      id: text(row, "id"),
+      jobId: text(row, "job_id"),
+      actorName: text(row, "actor_name"),
+      action: text(row, "action"),
+      detail: text(row, "detail"),
+      createdAt: text(row, "created_at"),
+    }));
+  }
+
+  private messageByKey(key: string): CustomerMessage | null {
+    const row = this.get(`SELECT * FROM messages WHERE idempotency_key = ?`, key);
+    return row ? mapMessage(row) : null;
+  }
+
+  private getMessage(id: string): CustomerMessage | null {
+    const row = this.get(`SELECT * FROM messages WHERE id = ?`, id);
+    return row ? mapMessage(row) : null;
+  }
+
+  private insertMessage(message: CustomerMessage): void {
+    this.run(
+      `INSERT INTO messages (
+        id, job_id, customer_id, direction, channel, body, subject, status, idempotency_key,
+        ghl_message_id, ghl_conversation_id, trigger_key, detail, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      message.id,
+      message.jobId,
+      message.customerId,
+      message.direction,
+      message.channel,
+      message.body,
+      message.subject,
+      message.status,
+      message.idempotencyKey,
+      message.ghlMessageId,
+      message.ghlConversationId,
+      message.trigger,
+      message.detail,
+      message.createdAt,
+    );
+  }
 }
 
 function text(row: Row, key: string): string {
@@ -916,8 +1190,69 @@ function mapJob(row: Row): Job {
     postWalkthroughComplete: flag(row, "post_walkthrough"),
     ghlOpportunityId: textOrNull(row, "ghl_opportunity_id"),
     ghlAppointmentId: textOrNull(row, "ghl_appointment_id"),
+    unscheduled: flag(row, "unscheduled"),
+    arrivalStart: textOrNull(row, "arrival_start"),
+    arrivalEnd: textOrNull(row, "arrival_end"),
+    accessNotes: textOrNull(row, "access_notes"),
+    shareToken: textOrNull(row, "share_token"),
     createdAt: text(row, "created_at"),
     updatedAt: text(row, "updated_at"),
+  };
+}
+
+function mapNote(row: Row): JobNote {
+  return {
+    id: text(row, "id"),
+    jobId: text(row, "job_id"),
+    authorName: text(row, "author_name"),
+    body: text(row, "body"),
+    visibility: "internal",
+    createdAt: text(row, "created_at"),
+  };
+}
+
+function mapMessage(row: Row): CustomerMessage {
+  const direction = text(row, "direction") === "inbound" ? "inbound" : "outbound";
+  const channel = text(row, "channel") === "email" ? "email" : "sms";
+  const rawStatus = text(row, "status");
+  const status = rawStatus === "sent" || rawStatus === "failed" || rawStatus === "skipped" || rawStatus === "sending"
+    ? rawStatus
+    : "failed";
+  return {
+    id: text(row, "id"),
+    jobId: text(row, "job_id"),
+    customerId: text(row, "customer_id"),
+    direction,
+    channel,
+    body: text(row, "body"),
+    subject: textOrNull(row, "subject"),
+    status,
+    idempotencyKey: text(row, "idempotency_key"),
+    ghlMessageId: textOrNull(row, "ghl_message_id"),
+    ghlConversationId: textOrNull(row, "ghl_conversation_id"),
+    trigger: text(row, "trigger_key"),
+    detail: textOrNull(row, "detail"),
+    createdAt: text(row, "created_at"),
+  };
+}
+
+function mapChangeOrder(row: Row): ChangeOrder {
+  const raw = text(row, "status");
+  const status = raw === "pending" || raw === "approved" || raw === "rejected" || raw === "applied" ? raw : "pending";
+  return {
+    id: text(row, "id"),
+    jobId: text(row, "job_id"),
+    authorName: text(row, "author_name"),
+    status,
+    customerApproved: flag(row, "customer_approved"),
+    previousLineItems: lineItems(text(row, "previous_json")),
+    nextLineItems: lineItems(text(row, "next_json")),
+    previousTotalCents: integer(row, "previous_total_cents"),
+    nextTotalCents: integer(row, "next_total_cents"),
+    reason: text(row, "reason"),
+    createdAt: text(row, "created_at"),
+    resolvedAt: textOrNull(row, "resolved_at"),
+    resolvedBy: textOrNull(row, "resolved_by"),
   };
 }
 

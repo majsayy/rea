@@ -1,4 +1,4 @@
-export type JobStatus = "scheduled" | "in_progress" | "done";
+export type JobStatus = "scheduled" | "on_my_way" | "in_progress" | "done";
 export type EstimateStatus = "draft" | "sent" | "accepted" | "declined";
 export type InvoiceStatus = "draft" | "issued" | "paid" | "void";
 export type PaymentStatus = "succeeded" | "failed" | "blocked";
@@ -77,6 +77,11 @@ export type Job = {
   postWalkthroughComplete: boolean;
   ghlOpportunityId: string | null;
   ghlAppointmentId: string | null;
+  unscheduled: boolean;
+  arrivalStart: string | null;
+  arrivalEnd: string | null;
+  accessNotes: string | null;
+  shareToken: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -86,6 +91,59 @@ export type JobNote = {
   jobId: string;
   authorName: string;
   body: string;
+  visibility: "internal";
+  createdAt: string;
+};
+
+export type CustomerMessage = {
+  id: string;
+  jobId: string;
+  customerId: string;
+  direction: "outbound" | "inbound";
+  channel: "sms" | "email";
+  body: string;
+  subject: string | null;
+  status: "sending" | "sent" | "failed" | "skipped";
+  idempotencyKey: string;
+  ghlMessageId: string | null;
+  ghlConversationId: string | null;
+  trigger: string;
+  detail: string | null;
+  createdAt: string;
+};
+
+export type MessageTemplate = {
+  key: string;
+  channel: "sms" | "email";
+  subject: string | null;
+  body: string;
+  updatedAt: string;
+};
+
+export type ChangeOrderStatus = "pending" | "approved" | "rejected" | "applied";
+
+export type ChangeOrder = {
+  id: string;
+  jobId: string;
+  authorName: string;
+  status: ChangeOrderStatus;
+  customerApproved: boolean;
+  previousLineItems: LineItem[];
+  nextLineItems: LineItem[];
+  previousTotalCents: number;
+  nextTotalCents: number;
+  reason: string;
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+};
+
+export type AuditEntry = {
+  id: string;
+  jobId: string;
+  actorName: string;
+  action: string;
+  detail: string;
   createdAt: string;
 };
 

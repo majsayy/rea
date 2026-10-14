@@ -15,6 +15,8 @@ const state = {
   customers: [],
   estimates: [],
   jobs: [],
+  unscheduled: [],
+  templates: [],
   job: null,
   jobTab: "overview",
   customerId: "",
@@ -111,10 +113,12 @@ async function refresh() {
   const from = addDays(denverDate(), -120);
   const to = addDays(denverDate(), 180);
   state.jobs = (await api(`/api/jobs?from=${from}&to=${to}`)).jobs;
+  state.unscheduled = (await api("/api/jobs?unscheduled=1")).jobs;
   if (state.session?.role !== "technician") {
     state.technicians = (await api("/api/technicians")).technicians;
     state.customers = (await api("/api/customers")).customers;
     state.estimates = (await api("/api/estimates")).estimates;
+    state.templates = (await api("/api/message-templates")).templates;
     for (const tech of state.technicians) {
       if (state.crewOn[tech.id] === undefined) state.crewOn[tech.id] = true;
     }
@@ -196,11 +200,19 @@ async function onClick(target, event) {
       state.view = "estimate";
       render();
     } else if (action === "status") {
-      state.job = await api(`/api/jobs/${state.job.job.id}`, {
+      const id = target.dataset.id || state.job?.job?.id;
+      const updated = await api(`/api/jobs/${id}`, {
         method: "PATCH",
         body: JSON.stringify({ status: target.dataset.status }),
       });
-      state.notice = "Job updated.";
+      if (state.view === "job" || state.job?.job?.id === id) state.job = updated;
+      state.notice = "Status saved. Customer texts and emails are sent by GoHighLevel.";
+      await refresh();
+      render();
+    } else if (action === "approve-change" || action === "reject-change") {
+      const path = action === "approve-change" ? "approve" : "reject";
+      state.job = await api(`/api/jobs/${state.job.job.id}/change-orders/${target.dataset.id}/${path}`, { method: "POST", body: "{}" });
+      state.notice = path === "approve" ? "Change order approved." : "Change order rejected. The price is unchanged.";
       await refresh();
       render();
     } else if (action === "walkthrough") {
@@ -249,21 +261,22 @@ async function onClick(target, event) {
 }
 
 async function moveJob(id, lane, event) {
-  const job = state.jobs.find((item) => item.id === id);
+  const job = state.jobs.find((item) => item.id === id) || state.unscheduled.find((item) => item.id === id);
   if (!job) return;
   const rect = lane.getBoundingClientRect();
   const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0;
   const span = END_MIN - START_MIN;
   let minutes = START_MIN + Math.round((ratio * span) / 15) * 15;
   minutes = Math.min(Math.max(minutes, START_MIN), END_MIN - 15);
-  const duration = Math.max(15, Math.round((new Date(job.scheduledEnd) - new Date(job.scheduledStart)) / 60000));
+  const duration = job.unscheduled ? 120 : Math.max(15, Math.round((new Date(job.scheduledEnd) - new Date(job.scheduledStart)) / 60000));
   const scheduledStart = denverStamp(lane.dataset.dropDay, minutes);
   const scheduledEnd = addMinutesLocal(lane.dataset.dropDay, minutes, duration);
-  const body = { scheduledStart, scheduledEnd };
+  const notifyCustomer = window.confirm("Notify the customer of this schedule change through GoHighLevel? Cancel still moves the job and does not text them.");
+  const body = { scheduledStart, scheduledEnd, unscheduled: false, notifyCustomer };
   if (lane.dataset.dropTech !== undefined) body.technicianIds = lane.dataset.dropTech ? [lane.dataset.dropTech] : [];
   try {
     await api(`/api/jobs/${id}`, { method: "PATCH", body: JSON.stringify(body) });
-    state.notice = "Job moved on the schedule.";
+    state.notice = notifyCustomer ? "Job moved. GoHighLevel will text the customer." : "Job moved. The customer was not texted.";
     await refresh();
   } catch (error) {
     state.error = error.message;
@@ -320,14 +333,22 @@ async function onSubmit(form) {
       await refresh();
     } else if (form.dataset.form === "job") {
       const technicianIds = [...form.querySelectorAll("input[name=technician]:checked")].map((input) => input.value);
+      const unscheduled = form.querySelector("input[name=unscheduled]")?.checked;
       const body = {
         customerId: data.customerId,
         addressId: data.addressId,
         title: data.title,
-        scheduledStart: data.start,
-        scheduledEnd: data.end,
         technicianIds,
       };
+      if (unscheduled) body.unscheduled = true;
+      else {
+        if (!data.start) throw new Error("Choose a start time, or mark the job unscheduled.");
+        body.scheduledStart = data.start;
+        if (data.end) body.scheduledEnd = data.end;
+      }
+      if (data.arrivalStart) body.arrivalStart = data.arrivalStart;
+      if (data.arrivalEnd) body.arrivalEnd = data.arrivalEnd;
+      if (data.accessNotes) body.accessNotes = data.accessNotes;
       if (data.estimateId) body.estimateId = data.estimateId;
       else body.serviceCents = dollarsToCents(data.dollars || "0");
       await api("/api/jobs", { method: "POST", body: JSON.stringify(body) });
@@ -338,14 +359,59 @@ async function onSubmit(form) {
       await api(`/api/jobs/${state.job.job.id}/notes`, { method: "POST", body: JSON.stringify({ body: data.body }) });
       state.job = await api(`/api/jobs/${state.job.job.id}`);
     } else if (form.dataset.form === "photo") {
-      const file = form.querySelector("input[type=file]")?.files?.[0];
-      if (!file) throw new Error("Choose a photo.");
-      const dataBase64 = await fileToBase64(file);
-      await api(`/api/jobs/${state.job.job.id}/photos`, {
+      const files = [...(form.querySelector("input[type=file]")?.files ?? [])];
+      if (!files.length) throw new Error("Choose a photo.");
+      for (const file of files) {
+        const dataBase64 = await fileToBase64(file);
+        await api(`/api/jobs/${state.job.job.id}/photos`, {
+          method: "POST",
+          body: JSON.stringify({ kind: data.kind, contentType: file.type || "image/jpeg", dataBase64 }),
+        });
+      }
+      state.job = await api(`/api/jobs/${state.job.job.id}`);
+      state.notice = "Photos saved. When both before and after are in, GoHighLevel emails the customer a photo link.";
+    } else if (form.dataset.form === "message") {
+      await api(`/api/jobs/${state.job.job.id}/messages`, {
         method: "POST",
-        body: JSON.stringify({ kind: data.kind, contentType: file.type, dataBase64 }),
+        body: JSON.stringify({ body: data.body, idempotencyKey: data.idempotencyKey || `ui-${Date.now()}` }),
       });
       state.job = await api(`/api/jobs/${state.job.job.id}`);
+      state.notice = "Message handed to GoHighLevel.";
+    } else if (form.dataset.form === "edit-note") {
+      await api(`/api/jobs/${state.job.job.id}/notes/${data.noteId}`, { method: "PATCH", body: JSON.stringify({ body: data.body }) });
+      state.job = await api(`/api/jobs/${state.job.job.id}`);
+    } else if (form.dataset.form === "price") {
+      const result = await api(`/api/jobs/${state.job.job.id}/price`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          serviceCents: dollarsToCents(data.dollars),
+          customerApproved: data.customerApproved === "on",
+          reason: data.reason || "Price change",
+        }),
+      });
+      state.job = result;
+      state.notice = result.changeOrder?.status === "pending"
+        ? "Change order is waiting for the office. The accepted price is unchanged."
+        : result.changeOrder?.customerApproved
+          ? "Customer-approved change order applied."
+          : "Price updated.";
+      await refresh();
+    } else if (form.dataset.form === "job-meta") {
+      const meta = { accessNotes: data.accessNotes };
+      if (data.arrivalStart) meta.arrivalStart = data.arrivalStart;
+      if (data.arrivalEnd) meta.arrivalEnd = data.arrivalEnd;
+      state.job = await api(`/api/jobs/${state.job.job.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(meta),
+      });
+    } else if (form.dataset.form === "templates") {
+      const templates = state.templates.map((template) => ({
+        key: template.key,
+        body: data[`body_${template.key}`],
+        subject: data[`subject_${template.key}`] || template.subject,
+      }));
+      state.templates = (await api("/api/message-templates", { method: "PUT", body: JSON.stringify({ templates }) })).templates;
+      state.notice = "Message templates saved.";
     } else if (form.dataset.form === "card") {
       await api(`/api/customers/${data.customerId}/card`, {
         method: "PUT",
@@ -464,14 +530,16 @@ function fieldShell() {
 
 function fieldBody() {
   if (state.view === "field-schedule") return fieldSchedule();
-  if (state.view === "field-jobs") return `<h2>My jobs</h2>${jobCards(state.jobs) || empty("Nothing assigned in this range.")}`;
+  if (state.view === "field-jobs") return `<h2>My jobs</h2>${jobCards([...state.unscheduled, ...state.jobs]) || empty("Nothing assigned in this range.")}`;
   const today = denverDate();
-  const open = state.jobs.filter((job) => job.status === "in_progress");
-  const upcoming = state.jobs.filter((job) => job.status === "scheduled" && denverDate(new Date(job.scheduledStart)) >= today);
+  const open = state.jobs.filter((job) => job.status === "in_progress" || job.status === "on_my_way");
+  const upcoming = state.jobs.filter((job) => job.status === "scheduled" && !job.unscheduled && denverDate(new Date(job.scheduledStart)) >= today);
   return `<h2>Today</h2>
     <p class="quiet">${esc(formatDay(today))}</p>
     <h3>Open work</h3>
     ${jobCards(open) || empty("No job in progress.")}
+    <h3>Unscheduled</h3>
+    ${jobCards(state.unscheduled) || empty("No unscheduled jobs.")}
     <h3>Upcoming</h3>
     ${jobCards(upcoming) || empty("No upcoming jobs.")}`;
 }
@@ -507,7 +575,7 @@ function officeView() {
 function homeView() {
   const today = denverDate();
   const todays = state.jobs.filter((job) => denverDate(new Date(job.scheduledStart)) === today);
-  const working = state.jobs.filter((job) => job.status === "in_progress");
+  const working = state.jobs.filter((job) => job.status === "in_progress" || job.status === "on_my_way");
   const openInvoices = state.jobs.filter((job) => job.invoice?.status === "issued");
   const review = state.estimates.filter((estimate) => estimate.travelReviewRequired && estimate.status === "draft");
   const report = state.report;
@@ -526,7 +594,7 @@ function homeView() {
         <h2>Crew</h2>
         ${state.technicians.map((tech) => {
           const active = working.find((job) => job.technicianIds.includes(tech.id));
-          const next = state.jobs.find((job) => job.status === "scheduled" && job.technicianIds.includes(tech.id));
+          const next = state.jobs.find((job) => job.status === "scheduled" && !job.unscheduled && job.technicianIds.includes(tech.id));
           return `<div class="row"><span class="dot" style="background:${esc(colorFor(tech.id))}"></span><strong>${esc(tech.name)}</strong><span class="quiet">${active ? `On ${esc(active.customerName)}` : next ? `Next ${esc(formatWhen(next.scheduledStart))}` : "Open"}</span></div>`;
         }).join("") || empty("Add crew from Team.")}
         <h2>Needs a look</h2>
@@ -563,6 +631,7 @@ function scheduleView() {
         </select>
         <button class="primary" type="button" data-action="create" data-kind="job">New job</button>
       </div>
+      ${unscheduledTray()}
       ${state.cal === "month" ? monthView() : timeBoard(lanes)}
     </div>
   </div>`;
@@ -618,10 +687,14 @@ function tile(job) {
   let background = color;
   let text = "#fff";
   let border = "0";
-  if (job.status === "in_progress") {
+  if (job.status === "on_my_way") {
+    background = "#8a6230";
+    text = "#fff";
+    border = "0";
+  } else if (job.status === "in_progress") {
     background = "#fff";
     text = "#1c2420";
-    border = `2px solid ${color}`;
+    border = "2px solid #9a4a32";
   } else if (job.status === "done") {
     background = "#e6eae7";
     text = "#3d4741";
@@ -681,8 +754,8 @@ function customerView() {
 }
 
 function jobsView() {
-  const rows = state.jobs.filter((job) => textMatch(`${job.customerName} ${job.title} ${job.addressLine} ${job.phone} ${crewNames(job.technicianIds)}`));
-  return table(["Job", "When", "Address", "Crew", "Status", "Amount"], rows.map((job) => `<tr data-action="open-job" data-id="${esc(job.id)}"><td><strong>${esc(job.title)}</strong><br>${esc(job.customerName)}</td><td>${esc(formatWhen(job.scheduledStart))}</td><td>${esc(job.addressLine)}</td><td>${esc(crewNames(job.technicianIds))}</td><td>${statusPill(job.status)}</td><td class="money">${money(job.totalCents)}${job.priceLocked ? "<br><span class='quiet'>Price locked</span>" : ""}</td></tr>`));
+  const rows = [...state.unscheduled, ...state.jobs].filter((job) => textMatch(`${job.customerName} ${job.title} ${job.addressLine} ${job.phone} ${crewNames(job.technicianIds)}`));
+  return table(["Job", "When", "Address", "Crew", "Status", "Amount"], rows.map((job) => `<tr data-action="open-job" data-id="${esc(job.id)}"><td><strong>${esc(job.title)}</strong><br>${esc(job.customerName)}</td><td>${job.unscheduled ? "Unscheduled" : esc(formatWhen(job.scheduledStart))}</td><td>${esc(job.addressLine)}</td><td>${esc(crewNames(job.technicianIds))}</td><td>${statusPill(job.status)}</td><td class="money">${money(job.totalCents)}${job.priceLocked ? "<br><span class='quiet'>Price locked</span>" : ""}</td></tr>`));
 }
 
 function estimatesView() {
@@ -714,53 +787,119 @@ function invoicesView() {
 }
 
 function jobView() {
-  const { job, customer, address, notes, photos, invoice, charge, technicianIds = [], technicians = [] } = state.job;
+  const detail = state.job;
+  const { job, customer, address, notes, photos, invoice, charge, technicianIds = [], technicians = [], thread = [], changeOrders = [], audit = [], photoUrl = null } = detail;
   const tech = state.session?.role === "technician";
   const tabs = tech
-    ? [["details", "Details"], ["notes", "Notes"], ["photos", "Photos"]]
-    : [["overview", "Overview"], ["lines", "Line items"], ["notes", "Notes"], ["photos", "Photos"], ["invoice", "Invoice"]];
+    ? [["details", "Details"], ["notes", "Notes"], ["photos", "Photos"], ["messages", "Messages"]]
+    : [["overview", "Overview"], ["lines", "Line items"], ["notes", "Notes"], ["photos", "Photos"], ["messages", "Messages"], ["invoice", "Invoice"]];
   const back = tech ? (state.returnView.startsWith("field-") ? state.returnView : "field-home") : (state.returnView || "schedule");
+  const when = job.unscheduled ? "Unscheduled" : `${formatWhen(job.scheduledStart)} – ${formatTime(job.scheduledEnd)}`;
+  const line = `${address.line1}, ${address.city} ${address.state} ${address.postalCode}`;
   return `<button class="ghost" type="button" data-action="nav" data-view="${esc(back)}">Back</button>
     <article class="property" style="margin-top:12px"><div class="property-band"></div><div class="property-body">
-      <div class="quiet">${esc(address.line1)}</div>
+      <div class="quiet"><a href="${mapsUrl(line)}" target="_blank" rel="noopener">${esc(address.line1)}</a></div>
       <div>${esc(address.city)}, ${esc(address.state)} ${esc(address.postalCode)}</div>
       <h2>${esc(job.title)} · ${esc(customer.firstName)} ${esc(customer.lastName)}</h2>
-      <div class="row">${statusPill(job.status)}<span>${esc(formatWhen(job.scheduledStart))} – ${esc(formatTime(job.scheduledEnd))}</span><span class="money">${money(job.totalCents)}</span>${job.priceLocked ? "<span class='quiet'>Accepted price is locked</span>" : ""}</div>
+      <div class="row">${statusPill(job.status)}<span>${esc(when)}</span>${arrivalLabel(job)}${job.priceLocked ? "<span class='quiet'>Accepted price is locked</span>" : ""}</div>
     </div></article>
-    <div class="job-toolbar">
-      ${job.status === "scheduled" ? `<button class="primary" type="button" data-action="status" data-status="in_progress">Start</button>` : ""}
-      ${job.status === "in_progress" ? `<button class="primary" type="button" data-action="status" data-status="done">Finish</button>` : ""}
+    <div class="job-toolbar crew-actions">
+      ${jobActions(job)}
       ${job.postWalkthroughComplete ? `<span class="status done">Walkthrough complete</span>` : `<button class="secondary" type="button" data-action="walkthrough" data-value="yes">Walkthrough done</button>`}
-      ${tech ? "" : `<span class="quiet">${esc(customer.phone)}</span>`}
+      <a class="secondary map-link" href="${mapsUrl(line)}" target="_blank" rel="noopener">Directions</a>
     </div>
     <div class="tabs">${tabs.map(([id, label]) => `<button type="button" data-action="tab" data-tab="${id}" aria-current="${state.jobTab === id ? "page" : "false"}">${label}</button>`).join("")}</div>
-    <section class="panel" style="margin-top:12px">${jobPanel(tech, job, customer, address, notes, photos, invoice, charge, technicianIds, technicians)}</section>`;
+    <section class="panel" style="margin-top:12px">${jobPanel(tech, job, customer, address, notes, photos, invoice, charge, technicianIds, technicians, thread, changeOrders, audit, photoUrl)}</section>`;
 }
 
-function jobPanel(tech, job, customer, address, notes, photos, invoice, charge, technicianIds, technicians) {
+function jobPanel(tech, job, customer, address, notes, photos, invoice, charge, technicianIds, technicians, thread, changeOrders, audit, photoUrl) {
   const tab = state.jobTab;
-  const crew = technicians.length ? technicians.map((tech) => tech.name).join(", ") : crewNames(technicianIds);
-  if (tab === "lines") return lineTable(job.lineItems, job.totalCents) + (job.travelFeeCents ? `<p class="quiet">Travel ${money(job.travelFeeCents)} is inside the total when the price was accepted.</p>` : "");
+  const crew = technicians.length ? technicians.map((person) => person.name).join(", ") : crewNames(technicianIds);
+  if (tab === "lines") return linesBlock(job, changeOrders, tech);
   if (tab === "notes") return notesBlock(notes);
-  if (tab === "photos") return photosBlock(photos, job.id);
+  if (tab === "photos") return photosBlock(photos, job.id, photoUrl);
+  if (tab === "messages") return messagesBlock(thread);
   if (tab === "invoice") return invoiceBlock(invoice, charge);
-  if (tech || tab === "details") {
-    return `<p><strong>${esc(customer.firstName)} ${esc(customer.lastName)}</strong><br>${esc(customer.phone)}<br>${esc(address.line1)}, ${esc(address.city)} ${esc(address.state)} ${esc(address.postalCode)}</p>
-      <p style="margin-top:8px">${esc(crew)}</p>
-      ${lineTable(job.lineItems, job.totalCents)}
-      <h3 style="margin-top:12px">Notes</h3>${notesBlock(notes)}`;
-  }
-  return `<div class="grid-2"><div><h3>Customer</h3><p>${esc(customer.firstName)} ${esc(customer.lastName)}<br>${esc(customer.phone)}</p><h3 style="margin-top:10px">Crew</h3><p>${esc(crew)}</p></div><div><h3>Price</h3><p class="money">${money(job.totalCents)}</p>${job.priceLocked ? "<p>Accepted price is locked.</p>" : ""}<p class="quiet">${job.travelFeeCents ? `Travel ${money(job.travelFeeCents)}` : "No travel fee"}</p>${charge?.ok ? "" : `<p class="quiet">${esc(charge?.message || "")}</p>`}</div></div>`;
+  if (tech || tab === "details") return specsBlock(job, customer, address, notes, crew);
+  return `<div class="grid-2"><div><h3>Customer</h3><p>${esc(customer.firstName)} ${esc(customer.lastName)}<br>${esc(customer.phone)}</p><h3 style="margin-top:10px">Crew</h3><p>${esc(crew)}</p>${metaForm(job)}</div><div><h3>Price</h3><p class="money">${money(job.totalCents)}</p>${job.priceLocked ? "<p>Accepted price is locked until a change order is approved.</p>" : ""}<p class="quiet">${job.travelFeeCents ? `Travel ${money(job.travelFeeCents)} stays separate from the service lines.` : "No travel fee"}</p>${charge?.ok ? "" : `<p class="quiet">${esc(charge?.message || "")}</p>`}${auditList(audit)}</div></div>`;
+}
+
+function specsBlock(job, customer, address, notes, crew) {
+  const line = `${address.line1}, ${address.city} ${address.state} ${address.postalCode}`;
+  return `<p><strong>${esc(customer.firstName)} ${esc(customer.lastName)}</strong><br>${esc(customer.phone)}<br><a href="${mapsUrl(line)}" target="_blank" rel="noopener">${esc(line)}</a></p>
+    <p style="margin-top:8px">${esc(crew)}</p>
+    ${arrivalLabel(job)}
+    <h3 style="margin-top:12px">Scope</h3>
+    ${lineTable(job.lineItems, job.totalCents)}
+    <h3 style="margin-top:12px">Access</h3>
+    <p>${esc(job.accessNotes || "No access notes yet.")}</p>
+    ${state.session?.role === "technician" ? `<form class="stack" data-form="job-meta"><label>Access notes <textarea name="accessNotes">${esc(job.accessNotes || "")}</textarea></label><button class="secondary" type="submit">Save access notes</button></form>` : metaForm(job)}
+    <h3 style="margin-top:12px">Internal notes</h3>
+    ${notes.map((note) => `<p style="margin-top:8px"><strong>${esc(note.authorName)}</strong><br>${esc(note.body)}</p>`).join("") || empty("No internal notes yet.")}`;
 }
 
 function notesBlock(notes) {
-  return `${notes.map((note) => `<p style="margin-top:8px"><strong>${esc(note.authorName)}</strong> · ${esc(formatWhen(note.createdAt))}<br>${esc(note.body)}</p>`).join("") || empty("No notes yet.")}
-    <form class="stack" data-form="note" style="margin-top:10px"><label>Note <textarea name="body" required></textarea></label><button class="secondary" type="submit">Add note</button></form>`;
+  return `${notes.map((note) => `<div style="margin-top:8px"><strong>${esc(note.authorName)}</strong> · ${esc(formatWhen(note.createdAt))}<br>${esc(note.body)}
+      <form class="stack" data-form="edit-note" style="margin-top:6px"><input type="hidden" name="noteId" value="${esc(note.id)}" /><textarea name="body" required>${esc(note.body)}</textarea><button class="ghost" type="submit">Save note</button></form></div>`).join("") || empty("No internal notes yet. These stay between the office and the crew.")}
+    <form class="stack" data-form="note" style="margin-top:10px"><label>Internal note <textarea name="body" required></textarea></label><button class="secondary" type="submit">Add note</button></form>`;
 }
 
-function photosBlock(photos, jobId) {
-  return `<div class="photos">${photos.map((photo) => `<figure><img alt="${esc(photo.kind)} photo" src="/api/jobs/${jobId}/photos/${photo.id}" /><figcaption>${esc(photo.kind)}</figcaption></figure>`).join("")}</div>
-    <form class="row" data-form="photo" style="margin-top:10px"><select name="kind"><option value="before">Before</option><option value="after">After</option><option value="walkthrough">Walkthrough</option></select><input type="file" accept="image/jpeg,image/png,image/webp" required /><button class="secondary" type="submit">Upload</button></form>`;
+function photosBlock(photos, jobId, photoUrl) {
+  return `${photoUrl ? `<p><a href="${esc(photoUrl)}" target="_blank" rel="noopener">Customer photo page</a></p>` : `<p class="quiet">The customer photo link is created after a before photo and an after photo are both saved.</p>`}
+    <div class="photos">${photos.map((photo) => `<figure><img alt="${esc(photo.kind)} photo" src="/api/jobs/${jobId}/photos/${photo.id}" /><figcaption>${esc(photo.kind)}</figcaption></figure>`).join("")}</div>
+    <form class="row" data-form="photo" style="margin-top:10px"><select name="kind"><option value="before">Before</option><option value="after">After</option><option value="walkthrough">Walkthrough</option></select><input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple required /><button class="secondary" type="submit">Upload</button></form>`;
+}
+
+function messagesBlock(thread) {
+  return `<p class="quiet">This is the GoHighLevel conversation for the contact. Each message is filed on a job. A reply lands on the job that is on the way or in progress, otherwise the next scheduled visit.</p>
+    ${thread.map((message) => `<p style="margin-top:8px"><strong>${message.direction === "inbound" ? "Customer" : "Sent"}</strong> · ${esc(message.channel)} · ${esc(message.status)}<br>${esc(message.body)}<br><span class="quiet">${esc(message.jobTitle)} · ${esc(formatWhen(message.createdAt))}</span></p>`).join("") || empty("No messages yet.")}
+    <form class="stack" data-form="message" style="margin-top:10px"><label>Text the customer through GoHighLevel <textarea name="body" required></textarea></label><button class="primary" type="submit">Send with GoHighLevel</button></form>`;
+}
+
+function linesBlock(job, changeOrders, tech) {
+  const pending = changeOrders.filter((order) => order.status === "pending");
+  return `${lineTable(job.lineItems, job.totalCents)}
+    <p class="quiet">${job.travelFeeCents ? `Travel ${money(job.travelFeeCents)} stays in the total and is not added again.` : "No travel fee."} ${job.priceLocked ? "This accepted price does not change until the office approves a change order, or the customer approves one on site." : "This price can still be edited while the job is scheduled."}</p>
+    ${pending.map((order) => `<div class="notice" style="margin-top:8px"><strong>${esc(order.authorName)}</strong> proposed ${money(order.previousTotalCents)} → ${money(order.nextTotalCents)}<br>${esc(order.reason)}
+      ${tech ? "" : `<div class="row" style="margin-top:8px"><button class="primary" type="button" data-action="approve-change" data-id="${esc(order.id)}">Approve</button><button class="secondary" type="button" data-action="reject-change" data-id="${esc(order.id)}">Reject</button></div>`}
+    </div>`).join("")}
+    <form class="stack" data-form="price" style="margin-top:10px"><label>Service price in dollars <input name="dollars" inputmode="decimal" required /></label><label>Reason <input name="reason" placeholder="Extra rooms" /></label><label class="check"><input type="checkbox" name="customerApproved" /> Customer approved this change</label><button class="secondary" type="submit">Update price</button></form>`;
+}
+
+function metaForm(job) {
+  if (state.session?.role === "technician") return "";
+  return `<form class="stack" data-form="job-meta" style="margin-top:10px"><div class="row"><label>Arrival from <input name="arrivalStart" type="datetime-local" /></label><label>Arrival to <input name="arrivalEnd" type="datetime-local" /></label></div><label>Access notes <textarea name="accessNotes">${esc(job.accessNotes || "")}</textarea></label><button class="secondary" type="submit">Save arrival and access</button></form>`;
+}
+
+function auditList(audit) {
+  if (!audit?.length) return "";
+  return `<h3 style="margin-top:12px">History</h3>${audit.map((entry) => `<p style="margin-top:6px"><strong>${esc(entry.actorName)}</strong> · ${esc(formatWhen(entry.createdAt))}<br>${esc(entry.detail)}</p>`).join("")}`;
+}
+
+function jobActions(job) {
+  const tech = state.session?.role === "technician";
+  const next = { scheduled: ["on_my_way", "On my way"], on_my_way: ["in_progress", "Start"], in_progress: ["done", "Finish"] }[job.status];
+  let html = next ? `<button class="primary crew-go" type="button" data-action="status" data-id="${esc(job.id)}" data-status="${next[0]}">${next[1]}</button>` : "";
+  if (!tech && job.status === "scheduled") html += `<button class="secondary" type="button" data-action="status" data-id="${esc(job.id)}" data-status="in_progress">Start</button>`;
+  if (!tech && job.status === "on_my_way") html += `<button class="ghost" type="button" data-action="status" data-id="${esc(job.id)}" data-status="scheduled">Back to scheduled</button>`;
+  if (!tech && job.status === "in_progress") html += `<button class="ghost" type="button" data-action="status" data-id="${esc(job.id)}" data-status="on_my_way">Back to on my way</button>`;
+  if (!tech && job.status === "done") html += `<button class="ghost" type="button" data-action="status" data-id="${esc(job.id)}" data-status="in_progress">Reopen</button>`;
+  return html;
+}
+
+function arrivalLabel(job) {
+  if (!job.arrivalStart) return "";
+  const end = job.arrivalEnd ? ` – ${formatTime(job.arrivalEnd)}` : "";
+  return `<span class="quiet">Arrive ${esc(formatTime(job.arrivalStart))}${esc(end)}</span>`;
+}
+
+function unscheduledTray() {
+  if (!state.unscheduled.length) return "";
+  return `<div class="unscheduled"><strong>Unscheduled</strong>${state.unscheduled.map((job) => `<button class="ghost" type="button" draggable="true" data-drag-job="${esc(job.id)}" data-action="open-job" data-id="${esc(job.id)}">${esc(job.customerName)} · ${esc(job.title)} · ${money(job.totalCents)}</button>`).join("")}</div>`;
+}
+
+function mapsUrl(address) {
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}`;
 }
 
 function invoiceBlock(invoice, charge) {
@@ -802,7 +941,11 @@ function teamView() {
 function importView() {
   return `<div class="grid-2">
     <form class="panel stack" data-form="import"><h2>Import from a spreadsheet</h2><p class="quiet">Use the column guide in the migration note. Cards and photos do not transfer.</p><input type="file" accept=".csv,text/csv" /><textarea name="csv" placeholder="First Name,Last Name,Mobile Number,Address,City,State,Zip"></textarea><button class="primary" type="submit">Import</button></form>
-    <section class="panel"><h2>GoHighLevel activity</h2>${state.events.map((event) => `<p style="margin-top:8px"><strong>${esc(event.eventType)}</strong> · ${esc(event.status)}<br><span class="quiet">${esc(event.detail || "")}</span></p>`).join("") || empty("No sync events yet.")}</section>
+    <section class="panel stack"><h2>GoHighLevel activity</h2>${state.events.map((event) => `<p style="margin-top:8px"><strong>${esc(event.eventType)}</strong> · ${esc(event.status)}<br><span class="quiet">${esc(event.detail || "")}</span></p>`).join("") || empty("No sync events yet.")}
+      <h2>Customer message templates</h2>
+      <p class="quiet">GoHighLevel sends these. The app does not text or email the customer itself.</p>
+      <form class="stack" data-form="templates">${state.templates.map((template) => `<label>${esc(template.key)}${template.channel === "email" ? ` <input name="subject_${esc(template.key)}" value="${esc(template.subject || "")}" />` : ""}<textarea name="body_${esc(template.key)}">${esc(template.body)}</textarea></label>`).join("")}<button class="secondary" type="submit">Save templates</button></form>
+    </section>
   </div>`;
 }
 
@@ -824,7 +967,7 @@ function estimateForm() {
 }
 
 function jobForm() {
-  return `${customerFields()}<label>Title <input name="title" value="Cleaning" required /></label><div class="row"><label>Start <input name="start" type="datetime-local" required /></label><label>End <input name="end" type="datetime-local" required /></label></div>
+  return `${customerFields()}<label>Title <input name="title" value="Cleaning" required /></label><label class="check"><input type="checkbox" name="unscheduled" /> Leave unscheduled</label><div class="row"><label>Start <input name="start" type="datetime-local" /></label><label>End <input name="end" type="datetime-local" /></label></div><div class="row"><label>Arrival from <input name="arrivalStart" type="datetime-local" /></label><label>Arrival to <input name="arrivalEnd" type="datetime-local" /></label></div><label>Access notes <textarea name="accessNotes" placeholder="Gate code, dogs, parking"></textarea></label>
     <label>Accepted estimate <select name="estimateId"><option value="">Price this job now</option>${state.estimates.filter((estimate) => estimate.status === "accepted").map((estimate) => `<option value="${esc(estimate.id)}">${esc(estimate.customerName)} · ${money(estimate.totalCents)}</option>`).join("")}</select></label>
     <label>Service price in dollars, if there is no accepted estimate <input name="dollars" inputmode="decimal" placeholder="180" /></label>
     <div class="row">${state.technicians.map((tech) => `<label class="check"><input type="checkbox" name="technician" value="${esc(tech.id)}" /> ${esc(tech.name)}</label>`).join("") || "<span class='quiet'>Add crew from Team first.</span>"}</div>
@@ -888,12 +1031,19 @@ function table(headers, rows, emptyText = "Nothing in this list yet.") {
 }
 
 function jobCards(jobs) {
-  return jobs.map((job) => `<button class="job-card ${job.status === "in_progress" ? "progress" : job.status === "done" ? "done" : ""}" type="button" data-action="open-job" data-id="${esc(job.id)}">
-    <span class="row"><strong>${esc(formatTime(job.scheduledStart))} – ${esc(formatTime(job.scheduledEnd))}</strong>${statusPill(job.status)}</span>
-    <strong>${esc(job.title)} · ${esc(job.customerName)}</strong>
-    <span>${esc(job.addressLine)}</span>
-    <span class="money">${money(job.totalCents)}${job.priceLocked ? " · Price locked" : ""}</span>
-  </button>`).join("");
+  return jobs.map((job) => {
+    const line = job.addressLine;
+    const when = job.unscheduled ? "Unscheduled" : `${formatTime(job.scheduledStart)} – ${formatTime(job.scheduledEnd)}`;
+    const tone = job.status === "on_my_way" ? "omw" : job.status === "in_progress" ? "progress" : job.status === "done" ? "done" : "";
+    return `<article class="job-card ${tone}">
+      <button class="card-open" type="button" data-action="open-job" data-id="${esc(job.id)}" data-tab="details">
+        <span class="row"><strong>${esc(when)}</strong>${statusPill(job.status)}</span>
+        <strong>${esc(job.title)} · ${esc(job.customerName)}</strong>
+        <span>${esc(line)}</span>
+      </button>
+      <div class="row"><a href="${mapsUrl(line)}" target="_blank" rel="noopener">Directions</a>${jobActions(job)}</div>
+    </article>`;
+  }).join("");
 }
 
 function jobLine(job) {
@@ -905,7 +1055,7 @@ function lineTable(items, total) {
 }
 
 function statusPill(status) {
-  const labels = { in_progress: "In progress", scheduled: "Scheduled", done: "Done", issued: "Open", paid: "Paid", draft: "Draft", accepted: "Accepted", declined: "Declined", sent: "Sent" };
+  const labels = { on_my_way: "On my way", in_progress: "In progress", scheduled: "Scheduled", done: "Done", issued: "Open", paid: "Paid", draft: "Draft", accepted: "Accepted", declined: "Declined", sent: "Sent" };
   return `<span class="status ${esc(status)}">${esc(labels[status] || status)}</span>`;
 }
 

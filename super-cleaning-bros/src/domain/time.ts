@@ -39,6 +39,17 @@ export function denverLocalToUtc(value: string): string {
   return utc.toISOString();
 }
 
+export function formatDenver(iso: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Denver",
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(iso));
+}
+
 /** A calendar date starts at midnight in America/Denver. */
 export function parseRangeStart(value: string, label: string): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return denverLocalToUtc(`${value.trim()}T00:00`);

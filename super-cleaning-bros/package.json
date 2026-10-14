@@ -11,6 +11,7 @@
     "start": "node --experimental-sqlite --import tsx src/index.ts",
     "dev": "node --watch --experimental-sqlite --import tsx src/index.ts",
     "test": "node --experimental-sqlite --import tsx --test tests/*.test.ts",
+    "ghl:lifecycle": "node --experimental-sqlite --import tsx scripts/ghl-lifecycle.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

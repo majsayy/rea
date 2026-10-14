@@ -27,6 +27,10 @@ export type AppConfig = {
     stageDone: string | null;
     stageInvoiced: string | null;
     stagePaid: string | null;
+    stageOnMyWay: string | null;
+    emailFrom: string | null;
+    reviewUrl: string | null;
+    photoLinkFieldId: string | null;
   };
   stripe: { secretKey: string | null; webhookSecret: string | null };
   googleMapsApiKey: string | null;
@@ -100,6 +104,10 @@ export function loadConfig(env: NodeJS.ProcessEnv, cwd = process.cwd()): AppConf
       stageDone: blank(env.GHL_STAGE_DONE),
       stageInvoiced: blank(env.GHL_STAGE_INVOICED),
       stagePaid: blank(env.GHL_STAGE_PAID),
+      stageOnMyWay: blank(env.GHL_STAGE_ON_MY_WAY),
+      emailFrom: blank(env.GHL_EMAIL_FROM),
+      reviewUrl: blank(env.REVIEW_URL),
+      photoLinkFieldId: blank(env.GHL_PHOTO_LINK_FIELD_ID),
     },
     stripe: {
       secretKey: blank(env.STRIPE_SECRET_KEY),

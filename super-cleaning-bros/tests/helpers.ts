@@ -2,7 +2,7 @@ import { loadConfig } from "../src/config.ts";
 import { buildContext, type Ctx } from "../src/app/context.ts";
 import { addressKey } from "../src/domain/normalize.ts";
 import type { AddressDraft } from "../src/app/validate.ts";
-import type { GhlClient, GhlContactWrite } from "../src/ghl/client.ts";
+import type { GhlClient, GhlContactWrite, GhlMessageResult, GhlOutboundMessage } from "../src/ghl/client.ts";
 import type { IncomingContact } from "../src/ghl/parse.ts";
 import type { ChargeInput, PaymentProvider } from "../src/payments/provider.ts";
 
@@ -13,6 +13,8 @@ export class RecordingGhl implements GhlClient {
   tags: Array<{ contactId: string; tags: string[] }> = [];
   removed: string[][] = [];
   stages: Array<{ opportunityId: string; stageId: string }> = [];
+  messages: GhlOutboundMessage[] = [];
+  fields: Array<{ contactId: string; fieldId: string; value: string }> = [];
   private sequence = 1;
 
   upsertContact(input: GhlContactWrite): Promise<IncomingContact> {
@@ -50,6 +52,16 @@ export class RecordingGhl implements GhlClient {
 
   updateOpportunityStage(opportunityId: string, stageId: string): Promise<void> {
     this.stages.push({ opportunityId, stageId });
+    return Promise.resolve();
+  }
+
+  sendConversationMessage(input: GhlOutboundMessage): Promise<GhlMessageResult> {
+    this.messages.push(input);
+    return Promise.resolve({ messageId: `msg_${this.messages.length}`, conversationId: "conv_test" });
+  }
+
+  setCustomField(contactId: string, fieldId: string, value: string): Promise<void> {
+    this.fields.push({ contactId, fieldId, value });
     return Promise.resolve();
   }
 }
