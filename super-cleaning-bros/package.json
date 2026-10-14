@@ -1,0 +1,23 @@
+{
+  "name": "super-cleaning-bros",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Field service app for Super Cleaning Bros in Erie, CO. Separate from the REA reverse-engineering toolkit.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node --experimental-sqlite --import tsx src/index.ts",
+    "dev": "node --watch --experimental-sqlite --import tsx src/index.ts",
+    "test": "node --experimental-sqlite --import tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "tsx": "4.20.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "typescript": "5.9.2"
+  }
+}
