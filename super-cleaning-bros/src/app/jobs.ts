@@ -192,22 +192,26 @@ export function getJob(ctx: Ctx, actor: Actor, id: string) {
 }
 
 export function listJobs(ctx: Ctx, actor: Actor, from: string, to: string) {
-  const jobs = ctx.store.listJobs(from, to).flatMap((job) => {
+  const rows = ctx.store.listJobs(from, to).flatMap((job) => {
     const technicianIds = ctx.store.assignmentIds(job.id);
     if (actor.role === "technician" && !technicianIds.includes(actor.technicianId)) return [];
+    return [{ job, technicianIds }];
+  });
+  const invoices = ctx.store.invoiceBriefs(rows.map((row) => row.job.id));
+  return rows.map(({ job, technicianIds }) => {
     const customer = ctx.store.getCustomer(job.customerId);
     const address = ctx.store.getAddress(job.addressId);
-    return [
-      {
-        ...job,
-        technicianIds,
-        customerName: customer ? `${customer.firstName} ${customer.lastName}`.trim() : "Customer",
-        addressLine: address ? `${address.line1}, ${address.city} ${address.state} ${address.postalCode}` : "",
-        phone: customer?.phone ?? "",
-      },
-    ];
+    return {
+      ...job,
+      technicianIds,
+      customerName: customer ? `${customer.firstName} ${customer.lastName}`.trim() : "Customer",
+      addressLine: address ? `${address.line1}, ${address.city} ${address.state} ${address.postalCode}` : "",
+      city: address?.city ?? "",
+      postalCode: address?.postalCode ?? "",
+      phone: customer?.phone ?? "",
+      invoice: invoices.get(job.id) ?? null,
+    };
   });
-  return jobs;
 }
 
 async function priceNewJob(

@@ -670,6 +670,29 @@ export class Store {
     return row ? mapInvoice(row) : null;
   }
 
+  invoiceBriefs(jobIds: readonly string[]): Map<string, { id: string; number: string; status: string; totalCents: number }> {
+    const briefs = new Map<string, { id: string; number: string; status: string; totalCents: number }>();
+    if (jobIds.length === 0) return briefs;
+    const placeholders = jobIds.map(() => "?").join(", ");
+    const rows = this.all(
+      `SELECT id, job_id, number, status, total_cents FROM invoices
+       WHERE status != 'void' AND job_id IN (${placeholders})
+       ORDER BY created_at DESC`,
+      ...jobIds,
+    );
+    for (const row of rows) {
+      const jobId = text(row, "job_id");
+      if (briefs.has(jobId)) continue;
+      briefs.set(jobId, {
+        id: text(row, "id"),
+        number: text(row, "number"),
+        status: text(row, "status"),
+        totalCents: integer(row, "total_cents"),
+      });
+    }
+    return briefs;
+  }
+
   markInvoicePaid(id: string): void {
     this.run("UPDATE invoices SET status = 'paid' WHERE id = ?", id);
   }

@@ -87,6 +87,7 @@ describe("HTTP API", () => {
       assert.equal(body.jobs.length, 1);
       assert.equal(body.jobs[0].totalCents, 18_000);
       assert.equal(body.jobs[0].priceLocked, true);
+      assert.equal(body.jobs[0].invoice, null);
 
       const page = await fetch(`${base}/`);
       assert.equal(page.status, 200);

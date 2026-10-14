@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import { saveCustomer } from "../src/app/customers.ts";
 import { acceptEstimate, createEstimate } from "../src/app/estimates.ts";
-import { addPhoto, createJob, updateJob, updateJobPrice } from "../src/app/jobs.ts";
+import { addPhoto, createJob, listJobs, updateJob, updateJobPrice } from "../src/app/jobs.ts";
 import { chargeInvoice, createInvoice, saveCard } from "../src/app/billing.ts";
 import { createTechnician } from "../src/app/crew.ts";
 import { importCustomers } from "../src/app/importer.ts";
@@ -142,6 +142,9 @@ describe("office job flow", () => {
         last4: "4242",
       });
       const invoice = await createInvoice(ctx, office, job.job.id);
+      const listed = listJobs(ctx, office, "2026-10-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z");
+      assert.equal(listed[0]?.invoice?.number, invoice.invoice.number);
+      assert.equal(listed[0]?.invoice?.status, "issued");
       await assert.rejects(chargeInvoice(ctx, office, invoice.invoice.id), (error: unknown) => {
         return error instanceof AppError && error.code === "completion_evidence_missing";
       });
@@ -151,6 +154,7 @@ describe("office job flow", () => {
       addPhoto(ctx, office, job.job.id, { kind: "after", contentType: "image/png", dataBase64: png });
       const paid = await chargeInvoice(ctx, office, invoice.invoice.id);
       assert.equal(paid.payment.status, "succeeded");
+      assert.equal(listJobs(ctx, office, "2026-10-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z")[0]?.invoice?.status, "paid");
       assert.equal(payments.charges.length, 1);
       assert.equal(paid.payment.amountCents, 18_000);
       assert.ok(ghl.notes.some((note) => note.body.includes("done")));

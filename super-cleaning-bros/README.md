@@ -4,6 +4,8 @@ Field-service app for Super Cleaning Bros in Erie, CO 80516. It covers the daily
 
 This directory is a separate product inside the `majsayy/rea` fork. REA is a reverse-engineering toolkit. A cleaning-business system does not belong in REA's analysis pipeline, providers, or MCP tools, so nothing here is wired into `rea`. Run it on its own.
 
+The office layout follows a familiar field-service shape: a left sidebar, a top search bar, a home dashboard, dispatch and calendar schedule views, and tabbed customer, estimate, job, and invoice pages. On a phone, crew use a bottom tab bar and open a job card into a start/finish toolbar. The name, icons, and colors are Super Cleaning Bros. Housecall Pro's logo, screenshots, and brand colors are not used.
+
 ## Run it locally
 
 Node.js 22.13 or newer.
@@ -90,5 +92,7 @@ Set `STRIPE_WEBHOOK_SECRET`. The handler accepts `checkout.session.completed` fo
 This is the daily operating loop, not a full Housecall Pro replacement.
 
 Not built yet: online booking widget, automated SMS and email reminders, consumer financing, QuickBooks, live GPS and route optimization, call tracking, marketing campaigns, payroll, a native iOS/Android app, e-sign proposals, recurring service agreements, equipment inventory, and review requests. GoHighLevel can keep doing messaging and pipeline marketing. Customer logins, password reset, and rate limiting are not in this version; the office password and crew PINs are the access control.
+
+The schedule can be dragged to a new time or crew column, but there is no live map, street-level photo, or "on my way" status. Jobs are scheduled, in progress, or done. There is no separate unscheduled inbox, price book, or inbox/marketing menu.
 
 Historical card numbers cannot be imported. See [docs/migrating-from-housecall-pro.md](docs/migrating-from-housecall-pro.md).
