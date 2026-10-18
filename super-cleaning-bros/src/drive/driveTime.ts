@@ -1,5 +1,5 @@
 import type { DriveEstimate } from "../domain/travel.ts";
-import { estimateDriveOffline, type ShopOrigin } from "../domain/travel.ts";
+import { METERS_PER_MILE, estimateDriveOffline, type ShopOrigin } from "../domain/travel.ts";
 import { isRecord } from "../domain/errors.ts";
 
 export type DriveAddress = {
@@ -40,12 +40,14 @@ export class GoogleDriveTime implements DriveTimePort {
     const response = await this.fetchImpl(url);
     if (!response.ok) throw new Error(`Google Distance Matrix returned ${response.status}`);
     const body: unknown = await response.json();
-    const seconds = readDurationSeconds(body);
-    if (seconds === null) throw new Error("Google Distance Matrix did not return a duration");
+    const element = readElement(body);
+    const meters = element ? readNumber(element.distance) : null;
+    if (meters === null) throw new Error("Google Distance Matrix did not return a distance");
+    const seconds = element ? readNumber(element.duration) : null;
     return {
-      minutes: Math.round((seconds / 60) * 10) / 10,
+      minutes: seconds === null ? null : Math.round((seconds / 60) * 10) / 10,
       basis: "google",
-      distanceMiles: null,
+      distanceMiles: Math.round((meters / METERS_PER_MILE) * 10) / 10,
     };
   }
 }
@@ -65,12 +67,16 @@ export class FallbackDriveTime implements DriveTimePort {
   }
 }
 
-function readDurationSeconds(body: unknown): number | null {
+function readElement(body: unknown): Record<string, unknown> | null {
   if (!isRecord(body) || !Array.isArray(body.rows)) return null;
   const row = body.rows[0];
   if (!isRecord(row) || !Array.isArray(row.elements)) return null;
   const element = row.elements[0];
-  if (!isRecord(element) || element.status !== "OK" || !isRecord(element.duration)) return null;
-  const value = element.duration.value;
-  return typeof value === "number" ? value : null;
+  if (!isRecord(element) || element.status !== "OK") return null;
+  return element;
+}
+
+function readNumber(value: unknown): number | null {
+  if (!isRecord(value)) return null;
+  return typeof value.value === "number" ? value.value : null;
 }

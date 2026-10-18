@@ -35,7 +35,7 @@ First Name,Last Name,Mobile Number,Email,Address,City,State,Zip,Job Title,Job Da
 Ada,Lovelace,(303) 555-0111,ada@example.com,10 Main St,Erie,CO,80516,Standard clean,2026-10-22,180.00,Completed
 ```
 
-A date by itself is 9:00 America/Denver. `Completed` becomes done. `Cancelled` is skipped. The dollar total is the accepted price, so a travel fee is not added on top. If the drive from Erie is already more than 30 minutes and the total is large enough, the travel fee is shown inside that total.
+A date by itself is 9:00 America/Denver. `Completed` becomes done. `Cancelled` is skipped. The dollar total is the accepted price, so a distance fee is not added on top. If the road distance from Erie is already more than 35 miles and the total is large enough, that fee is kept inside the total for the shop books. It is not written as its own line.
 
 Customers match on last name plus phone or last name plus address. Importing twice does not create a second Garcia with the same phone.
 

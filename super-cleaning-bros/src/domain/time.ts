@@ -39,6 +39,42 @@ export function denverLocalToUtc(value: string): string {
   return utc.toISOString();
 }
 
+export function isDenverSunday(instant: Date): boolean {
+  return denverWeekday(instant) === "Sun";
+}
+
+export function denverDateKey(instant: Date): string {
+  const { year, month, day } = denverDateParts(instant);
+  return `${year}-${pad(month)}-${pad(day)}`;
+}
+
+/** Monday morning after a Sunday, as a UTC ISO instant. `releaseTime` is HH:MM in America/Denver. */
+export function nextMondayReleaseIso(sunday: Date, releaseTime: string): string {
+  const { year, month, day } = denverDateParts(sunday);
+  const next = new Date(Date.UTC(year, month - 1, day + 1));
+  const date = `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}`;
+  return denverLocalToUtc(`${date}T${releaseTime}`);
+}
+
+function denverWeekday(instant: Date): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/Denver", weekday: "short" }).format(instant);
+}
+
+function denverDateParts(instant: Date): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Denver",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(instant);
+  const read = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+  return { year: read("year"), month: read("month"), day: read("day") };
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
 export function formatDenver(iso: string): string {
   return new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Denver",

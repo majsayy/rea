@@ -3,7 +3,8 @@ import { POSTAL_CENTROIDS } from "./zips.ts";
 
 export const ROAD_FACTOR = 1.3;
 export const AVERAGE_SPEED_MPH = 35;
-export const DEFAULT_TRAVEL_THRESHOLD_MINUTES = 30;
+export const METERS_PER_MILE = 1609.344;
+export const DEFAULT_TRAVEL_THRESHOLD_MILES = 35;
 export const DEFAULT_TRAVEL_FEE_CENTS = 10_000;
 const SAME_POSTAL_MINUTES = 12;
 
@@ -16,7 +17,7 @@ export type DriveEstimate = {
 };
 
 export type TravelPolicy = {
-  thresholdMinutes: number;
+  thresholdMiles: number;
   feeCents: number;
 };
 
@@ -48,14 +49,15 @@ export function minutesForStraightLineMiles(straightMiles: number): number {
   return (straightMiles * ROAD_FACTOR * 60) / AVERAGE_SPEED_MPH;
 }
 
-export function travelFeeForMinutes(
-  minutes: number | null,
+/** $100 when the road distance is more than the threshold. Exactly the threshold is no fee. */
+export function travelFeeForMiles(
+  miles: number | null,
   policy: TravelPolicy,
 ): { feeCents: number; reviewRequired: boolean } {
-  if (minutes === null || !Number.isFinite(minutes)) {
+  if (miles === null || !Number.isFinite(miles)) {
     return { feeCents: 0, reviewRequired: true };
   }
-  if (minutes > policy.thresholdMinutes) {
+  if (miles > policy.thresholdMiles) {
     return { feeCents: policy.feeCents, reviewRequired: false };
   }
   return { feeCents: 0, reviewRequired: false };
@@ -71,27 +73,26 @@ export function estimateDriveOffline(
     Number.isFinite(address.lat) &&
     Number.isFinite(address.lng)
   ) {
-    const distanceMiles = haversineMiles(shop, { lat: address.lat, lng: address.lng });
-    return {
-      minutes: roundTenth(minutesForStraightLineMiles(distanceMiles)),
-      basis: "coordinates",
-      distanceMiles: roundTenth(distanceMiles),
-    };
+    const straightMiles = haversineMiles(shop, { lat: address.lat, lng: address.lng });
+    return driveFromStraightMiles(straightMiles, "coordinates");
   }
   const postal = postalDigits(address.postalCode);
   if (postal !== "" && postal === postalDigits(shop.postalCode)) {
-    return { minutes: SAME_POSTAL_MINUTES, basis: "same_postal", distanceMiles: null };
+    return { minutes: SAME_POSTAL_MINUTES, basis: "same_postal", distanceMiles: 0 };
   }
   const centroid = POSTAL_CENTROIDS[postal];
   if (centroid) {
-    const distanceMiles = haversineMiles(shop, centroid);
-    return {
-      minutes: roundTenth(minutesForStraightLineMiles(distanceMiles)),
-      basis: "postal_centroid",
-      distanceMiles: roundTenth(distanceMiles),
-    };
+    return driveFromStraightMiles(haversineMiles(shop, centroid), "postal_centroid");
   }
   return { minutes: null, basis: "unknown", distanceMiles: null };
+}
+
+function driveFromStraightMiles(straightMiles: number, basis: "coordinates" | "postal_centroid"): DriveEstimate {
+  return {
+    minutes: roundTenth(minutesForStraightLineMiles(straightMiles)),
+    basis,
+    distanceMiles: roundTenth(straightMiles * ROAD_FACTOR),
+  };
 }
 
 function roundTenth(value: number): number {

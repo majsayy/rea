@@ -21,7 +21,7 @@ describe("GoHighLevel sync", () => {
           title: "Standard clean",
           startTime: "2026-10-21T15:00:00.000Z",
           endTime: "2026-10-21T17:00:00.000Z",
-          address: "500 Market St, Denver, CO 80202",
+          address: "500 Market St, Fort Collins, CO 80525",
           contactId: "con_9",
         },
         opportunity: { id: "opp_9", monetaryValue: 250 },
@@ -148,13 +148,16 @@ describe("providers", () => {
       assert.equal(url.searchParams.get("key"), "maps-key");
       assert.equal(url.searchParams.get("destinations"), "80202");
       return new Response(
-        JSON.stringify({ rows: [{ elements: [{ status: "OK", duration: { value: 2400 } }] }] }),
+        JSON.stringify({
+          rows: [{ elements: [{ status: "OK", duration: { value: 2400 }, distance: { value: 64373.76 } }] }],
+        }),
         { status: 200 },
       );
     });
     const estimate = await drive.estimate({ lat: null, lng: null, postalCode: "80202" });
     assert.equal(estimate.basis, "google");
     assert.equal(estimate.minutes, 40);
+    assert.equal(estimate.distanceMiles, 40);
   });
 });
 

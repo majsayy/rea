@@ -43,10 +43,10 @@ It listens on port 8799, posts a booking webhook for the test contact, then driv
 ## What the test contact should receive
 
 1. **Booking.** No text and no email. In GoHighLevel, the contact gets a note that the job is scheduled and the tag `scb-job-scheduled`. The job shows up in the app.
-2. **On my way.** One SMS: `Hi {first}, {tech} from Super Cleaning Bros is on the way to 10 Test St, Erie. ETA in about {minutes} minutes.` If drive time is unknown, the ETA reads `shortly`. The same words are added as a contact note. The status tag becomes `scb-job-on-my-way`. The opportunity stage moves only when `GHL_STAGE_ON_MY_WAY` is set.
-3. **Start.** One SMS: `Hi {first}, we started your job at 10 Test St, Erie.` Note and tag `scb-job-in-progress`.
-4. **Photos.** No SMS. After both a before photo and an after photo exist, one email from `GHL_EMAIL_FROM` with subject `Your Super Cleaning Bros photos` and a link `{PUBLIC_BASE_URL}/share/{token}`. The page is an unguessable before/after gallery. It does not show the phone number or the price. The link is also a contact note. When `GHL_PHOTO_LINK_FIELD_ID` is set, that custom field is set to the same link. A second photo upload does not send a second email.
-5. **Finish.** One SMS that the job is finished, then one SMS with `REVIEW_URL`. Tag `scb-job-done`.
+2. **On my way.** One SMS: `Hi {first}, it's {tech} with Super Cleaning Bros. I'm on my way to 10 Test St, Erie and should be there in about {minutes} minutes.` If the drive is unknown, that ending reads `shortly`. The same words are added as a contact note. The status tag becomes `scb-job-on-my-way`. The opportunity stage moves only when `GHL_STAGE_ON_MY_WAY` is set. On a Sunday in America/Denver this text is skipped.
+3. **Start.** One SMS: `Hi {first}, we just started at 10 Test St, Erie.` Note and tag `scb-job-in-progress`. This text is also skipped on Sunday.
+4. **Photos.** No SMS. After both a before photo and an after photo exist, one email from `GHL_EMAIL_FROM` with subject `Photos from your cleaning` and a link `{PUBLIC_BASE_URL}/share/{token}`. The page is an unguessable before/after gallery. It does not show the phone number, the price, or a distance fee. The link is also a contact note. When `GHL_PHOTO_LINK_FIELD_ID` is set, that custom field is set to the same link. A second photo upload does not send a second email. This email still sends on Sunday.
+5. **Finish.** One SMS: `Hi {first}, we're all finished at 10 Test St, Erie. Thanks for having Super Cleaning Bros out.` Then one SMS with `REVIEW_URL`. Tag `scb-job-done`. If Finish happens on Sunday, both texts wait until Monday at `MONDAY_TEXT_RELEASE_TIME` (default 8:00am Denver).
 
 Tapping the same step again does not send the text again. A failed GoHighLevel send stays on the job as failed and can be retried. The job status is kept either way.
 

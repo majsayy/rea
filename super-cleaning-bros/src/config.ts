@@ -8,7 +8,8 @@ export type AppConfig = {
   databasePath: string;
   publicBaseUrl: string;
   shop: { name: string; postalCode: string; lat: number; lng: number };
-  travel: { thresholdMinutes: number; feeCents: number };
+  travel: { thresholdMiles: number; feeCents: number };
+  mondayTextReleaseTime: string;
   auth: {
     required: boolean;
     officePassword: string | null;
@@ -50,6 +51,14 @@ function integer(value: string | undefined, fallback: number, label: string): nu
   return parsed;
 }
 
+function clockTime(value: string | undefined, fallback: string, label: string): string {
+  const text = value === undefined || value.trim() === "" ? fallback : value.trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(text)) {
+    throw new AppError("invalid_config", `${label} must be a time like 08:00 in America/Denver.`, 500);
+  }
+  return text;
+}
+
 function coordinate(value: string | undefined, fallback: number, label: string): number {
   if (value === undefined || value.trim() === "") return fallback;
   const parsed = Number(value);
@@ -83,9 +92,10 @@ export function loadConfig(env: NodeJS.ProcessEnv, cwd = process.cwd()): AppConf
       lng: coordinate(env.SHOP_LNG, -105.0497, "SHOP_LNG"),
     },
     travel: {
-      thresholdMinutes: integer(env.TRAVEL_THRESHOLD_MINUTES, 30, "TRAVEL_THRESHOLD_MINUTES"),
+      thresholdMiles: integer(env.TRAVEL_THRESHOLD_MILES, 35, "TRAVEL_THRESHOLD_MILES"),
       feeCents: integer(env.TRAVEL_FEE_CENTS, 10_000, "TRAVEL_FEE_CENTS"),
     },
+    mondayTextReleaseTime: clockTime(env.MONDAY_TEXT_RELEASE_TIME, "08:00", "MONDAY_TEXT_RELEASE_TIME"),
     auth: {
       required: officePassword !== null,
       officePassword,

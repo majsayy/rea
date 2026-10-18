@@ -65,6 +65,10 @@ export class Store {
     this.db.prepare(sql).run(...params);
   }
 
+  private changes(sql: string, ...params: Sql[]): number {
+    return Number(this.db.prepare(sql).run(...params).changes);
+  }
+
   insertCustomer(input: {
     firstName: string;
     lastName: string;
@@ -325,7 +329,7 @@ export class Store {
     return estimate;
   }
 
-  markEstimate(id: string, status: "accepted" | "declined" | "sent", acceptedAt: string | null): void {
+  markEstimate(id: string, status: "accepted" | "declined", acceptedAt: string | null): void {
     this.run(
       "UPDATE estimates SET status = ?, accepted_at = ? WHERE id = ?",
       status,
@@ -850,18 +854,26 @@ export class Store {
     this.run("DELETE FROM webhook_receipts WHERE id = ?", id);
   }
 
-  claimMessage(input: Omit<CustomerMessage, "id" | "createdAt" | "ghlMessageId" | "ghlConversationId" | "detail">): {
+  claimMessage(
+    input: Omit<CustomerMessage, "id" | "createdAt" | "ghlMessageId" | "ghlConversationId" | "detail" | "sendAfter">,
+  ): {
     proceed: boolean;
     message: CustomerMessage;
   } {
     const existing = this.messageByKey(input.idempotencyKey);
-    if (existing && (existing.status === "sent" || existing.status === "sending")) {
+    if (
+      existing &&
+      (existing.status === "sent" || existing.status === "sending" || existing.status === "held" || sundaySkip(existing))
+    ) {
       return { proceed: false, message: existing };
     }
     if (existing) {
       this.run(
-        `UPDATE messages SET status = 'sending', body = ?, subject = ?, channel = ?, detail = NULL
-         WHERE id = ? AND status IN ('failed', 'skipped')`,
+        `UPDATE messages SET status = 'sending', body = ?, subject = ?, channel = ?, detail = NULL, send_after = NULL
+         WHERE id = ? AND (
+           status = 'failed'
+           OR (status = 'skipped' AND IFNULL(detail, '') != 'sunday_not_useful')
+         )`,
         input.body,
         input.subject,
         input.channel,
@@ -877,6 +889,7 @@ export class Store {
       ghlMessageId: null,
       ghlConversationId: null,
       detail: null,
+      sendAfter: null,
       createdAt: this.stamp(),
     };
     try {
@@ -904,6 +917,29 @@ export class Store {
       extra.detail,
       id,
     );
+  }
+
+  markHeld(id: string, sendAfter: string): void {
+    this.run(
+      `UPDATE messages SET status = 'held', send_after = ?, detail = 'sunday_hold' WHERE id = ?`,
+      sendAfter,
+      id,
+    );
+  }
+
+  listHeldDue(nowIso: string): CustomerMessage[] {
+    return this.all(
+      `SELECT * FROM messages
+       WHERE status = 'held' AND send_after IS NOT NULL AND send_after <= ?
+       ORDER BY send_after, created_at`,
+      nowIso,
+    ).map(mapMessage);
+  }
+
+  claimHeld(id: string): CustomerMessage | null {
+    const changes = this.changes(`UPDATE messages SET status = 'sending' WHERE id = ? AND status = 'held'`, id);
+    if (changes !== 1) return null;
+    return this.getMessage(id);
   }
 
   messageById(id: string): CustomerMessage | null {
@@ -1053,8 +1089,8 @@ export class Store {
     this.run(
       `INSERT INTO messages (
         id, job_id, customer_id, direction, channel, body, subject, status, idempotency_key,
-        ghl_message_id, ghl_conversation_id, trigger_key, detail, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ghl_message_id, ghl_conversation_id, trigger_key, detail, send_after, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       message.id,
       message.jobId,
       message.customerId,
@@ -1068,6 +1104,7 @@ export class Store {
       message.ghlConversationId,
       message.trigger,
       message.detail,
+      message.sendAfter,
       message.createdAt,
     );
   }
@@ -1153,11 +1190,13 @@ function lineItems(json: string): LineItem[] {
 }
 
 function mapEstimate(row: Row): Estimate {
+  const rawStatus = text(row, "status");
+  const status = rawStatus === "accepted" || rawStatus === "declined" ? rawStatus : "draft";
   return {
     id: text(row, "id"),
     customerId: text(row, "customer_id"),
     addressId: text(row, "address_id"),
-    status: text(row, "status") as Estimate["status"],
+    status,
     serviceCents: integer(row, "service_cents"),
     travelFeeCents: integer(row, "travel_fee_cents"),
     totalCents: integer(row, "total_cents"),
@@ -1215,9 +1254,14 @@ function mapMessage(row: Row): CustomerMessage {
   const direction = text(row, "direction") === "inbound" ? "inbound" : "outbound";
   const channel = text(row, "channel") === "email" ? "email" : "sms";
   const rawStatus = text(row, "status");
-  const status = rawStatus === "sent" || rawStatus === "failed" || rawStatus === "skipped" || rawStatus === "sending"
-    ? rawStatus
-    : "failed";
+  const status =
+    rawStatus === "sent" ||
+    rawStatus === "failed" ||
+    rawStatus === "skipped" ||
+    rawStatus === "sending" ||
+    rawStatus === "held"
+      ? rawStatus
+      : "failed";
   return {
     id: text(row, "id"),
     jobId: text(row, "job_id"),
@@ -1232,8 +1276,13 @@ function mapMessage(row: Row): CustomerMessage {
     ghlConversationId: textOrNull(row, "ghl_conversation_id"),
     trigger: text(row, "trigger_key"),
     detail: textOrNull(row, "detail"),
+    sendAfter: textOrNull(row, "send_after"),
     createdAt: text(row, "created_at"),
   };
+}
+
+function sundaySkip(message: CustomerMessage): boolean {
+  return message.status === "skipped" && message.detail === "sunday_not_useful";
 }
 
 function mapChangeOrder(row: Row): ChangeOrder {

@@ -31,7 +31,7 @@ Set `OFFICE_PASSWORD` and a `SESSION_SECRET` of at least 16 characters before an
 ## What the office can do
 
 - Customers and service addresses. A repeat customer matches on last name plus phone, or last name plus address. The same first name is never enough.
-- Estimates. A drive longer than 30 minutes from 80516 adds a $100 travel fee. The same ZIP is treated as in town. Known Front Range ZIP codes use an offline distance estimate. An unknown ZIP is not given a guessed fee; the office has to add a map pin or ZIP before accepting it. Set `GOOGLE_MAPS_API_KEY` to prefer Google Distance Matrix, with the offline estimate as fallback.
+- Estimates. A job more than 35 miles from 80516 adds a $100 distance fee in the shop books. Exactly 35 miles does not. The same ZIP is in town. Known Front Range ZIP codes use an offline road distance. An unknown ZIP is not given a guessed fee; the office has to add a map pin or ZIP before accepting it. Set `GOOGLE_MAPS_API_KEY` to prefer Google Distance Matrix, with the offline estimate as fallback. The fee is never named on a customer text, email, photo page, estimate line, or invoice line. The customer sees the quote total. Estimates are drafted here and sent only from GoHighLevel. This app has no send-estimate action.
 - An accepted price stays that price. A later rate-card change does not replace it, and the travel fee is not added on top of a price the customer already accepted. The lock follows that customer at that address. Editing a locked price, or any price after the job leaves Scheduled, files a change order. The total stays put until the office approves it. Checking "Customer approved this change" applies it immediately and writes that approval to the job history. An unlocked job that is still scheduled can be edited directly, and that edit is logged too.
 - Schedule jobs, assign crew, and move them through scheduled, in progress, and done.
 - Crew notes, before/after photos, and a post-job walkthrough flag. The crew phone view is the same site with large controls.
@@ -69,10 +69,12 @@ The app pushes back:
 
 - contact create/update
 - job status as a contact note, a tag (`scb-job-scheduled`, `scb-job-on-my-way`, `scb-job-in-progress`, `scb-job-done`), and the matching opportunity stage when the stage id is set
-- customer SMS for On my way (technician name and an ETA when drive time is known), Start, and Finish
+- customer SMS for On my way (technician name and an ETA when the drive is known), Start, and Finish
 - a review SMS after Finish when `REVIEW_URL` is set
-- an email, not a text, when both a before photo and an after photo exist. The email links to `{PUBLIC_BASE_URL}/share/{token}`. The token is unguessable. The page is a before/after gallery and does not show the phone number or the price. The link is also a contact note, and the custom field when configured.
+- an email, not a text, when both a before photo and an after photo exist. The email links to `{PUBLIC_BASE_URL}/share/{token}`. The token is unguessable. The page is a before/after gallery and does not show the phone number, the price, or the distance fee. The link is also a contact note, and the custom field when configured.
 - a schedule-change SMS only when the office confirms the prompt
+
+Automated texts are not sent on Sunday in America/Denver. On my way and Start are skipped, because those texts would be wrong on Monday. Finish, the review text, and a reschedule whose new visit is still ahead are held until `MONDAY_TEXT_RELEASE_TIME` (default 08:00) Monday morning. A reschedule is skipped when that visit time has already passed by the Monday release. Photo emails still go out on Sunday. A reply typed in the job thread on Sunday is sent only after that customer has texted in the same Denver day. A skipped Sunday On my way stays skipped if the tech taps it again later; that visit's arrival text is not sent on Monday.
 - invoice issued (`scb-invoiced`)
 - payment recorded (`scb-paid`)
 

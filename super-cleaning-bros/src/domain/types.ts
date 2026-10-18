@@ -1,5 +1,5 @@
 export type JobStatus = "scheduled" | "on_my_way" | "in_progress" | "done";
-export type EstimateStatus = "draft" | "sent" | "accepted" | "declined";
+export type EstimateStatus = "draft" | "accepted" | "declined";
 export type InvoiceStatus = "draft" | "issued" | "paid" | "void";
 export type PaymentStatus = "succeeded" | "failed" | "blocked";
 export type PhotoKind = "before" | "after" | "walkthrough";
@@ -103,12 +103,13 @@ export type CustomerMessage = {
   channel: "sms" | "email";
   body: string;
   subject: string | null;
-  status: "sending" | "sent" | "failed" | "skipped";
+  status: "sending" | "sent" | "failed" | "skipped" | "held";
   idempotencyKey: string;
   ghlMessageId: string | null;
   ghlConversationId: string | null;
   trigger: string;
   detail: string | null;
+  sendAfter: string | null;
   createdAt: string;
 };
 

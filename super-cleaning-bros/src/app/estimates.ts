@@ -2,13 +2,17 @@ import type { Estimate, LineItem } from "../domain/types.ts";
 import { AppError, isRecord } from "../domain/errors.ts";
 import { assertCents } from "../domain/money.ts";
 import { applyAcceptedPrice } from "../domain/pricing.ts";
-import { travelFeeForMinutes } from "../domain/travel.ts";
+import { travelFeeForMiles } from "../domain/travel.ts";
 import type { Actor } from "./actors.ts";
 import { assertOffice } from "./actors.ts";
 import type { Ctx } from "./context.ts";
 import { requireAddress, requireCustomer } from "../ghl/outbound.ts";
 import { cleanText } from "./validate.ts";
 
+/**
+ * Drafts, accepts, and declines stay in this app. GoHighLevel is the only
+ * place an estimate is sent to a customer. Nothing here texts or emails one.
+ */
 export async function createEstimate(ctx: Ctx, actor: Actor, body: unknown): Promise<Estimate> {
   assertOffice(actor);
   if (!isRecord(body)) throw new AppError("invalid_field", "Estimate details are required.", 400);
@@ -17,7 +21,7 @@ export async function createEstimate(ctx: Ctx, actor: Actor, body: unknown): Pro
   const lineItems = readLineItems(body);
   const serviceCents = lineItems.reduce((sum, item) => sum + item.amountCents, 0);
   const drive = await ctx.driveTime.estimate(address);
-  const travel = travelFeeForMinutes(drive.minutes, ctx.config.travel);
+  const travel = travelFeeForMiles(drive.distanceMiles, ctx.config.travel);
   const prior = ctx.store.latestAcceptedEstimate(customer.id, address.id);
   const quoted = applyAcceptedPrice({
     accepted: prior
@@ -60,7 +64,7 @@ export function acceptEstimate(ctx: Ctx, actor: Actor, id: string): Estimate {
   if (estimate.travelReviewRequired) {
     throw new AppError(
       "travel_review_required",
-      "Drive time from Erie is still unknown. Add a map location or a known ZIP before accepting the price.",
+      "Distance from Erie is still unknown. Add a map pin or a known ZIP before accepting the price.",
       409,
     );
   }

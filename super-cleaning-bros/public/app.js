@@ -599,7 +599,7 @@ function homeView() {
         }).join("") || empty("Add crew from Team.")}
         <h2>Needs a look</h2>
         ${openInvoices.map((job) => `<button class="ghost" type="button" data-action="open-job" data-id="${esc(job.id)}" data-tab="invoice">${esc(job.invoice.number)} · ${esc(job.customerName)} · ${money(job.invoice.totalCents)}</button>`).join("")}
-        ${review.map((estimate) => `<button class="ghost" type="button" data-action="open-estimate" data-id="${esc(estimate.id)}">Confirm drive time · ${esc(estimate.customerName)}</button>`).join("")}
+        ${review.map((estimate) => `<button class="ghost" type="button" data-action="open-estimate" data-id="${esc(estimate.id)}">Confirm distance · ${esc(estimate.customerName)}</button>`).join("")}
         ${openInvoices.length || review.length ? "" : empty("Nothing waiting.")}
       </section>
     </div>`;
@@ -774,9 +774,9 @@ function estimateView() {
       <h2>${esc(estimate.lineItems[0]?.description || "Estimate")} · ${esc(estimate.customerName)}</h2>
       <div class="row">${statusPill(estimate.status)}${estimate.priceLocked ? "<span class='quiet'>Keeps a previously accepted price.</span>" : ""}</div>
     </div></article>
-    ${estimate.travelReviewRequired ? `<div class="error" style="margin-top:12px">Confirm drive time before accepting.</div>` : ""}
+    ${estimate.travelReviewRequired ? `<div class="error" style="margin-top:12px">Confirm the distance before accepting.</div>` : ""}
     <section class="panel" style="margin-top:12px">${lineTable(estimate.lineItems, estimate.totalCents)}
-      <p class="quiet">${estimate.driveMinutes === null ? "Drive time unknown" : `${estimate.driveMinutes} min from Erie`} · ${esc(estimate.travelBasis)}${estimate.travelFeeCents ? ` · travel ${money(estimate.travelFeeCents)}` : ""}</p>
+      <p class="quiet">${estimate.driveMinutes === null ? "Distance unknown" : `About ${estimate.driveMinutes} min from Erie`} · ${esc(estimate.travelBasis)}${estimate.travelFeeCents ? ` · travel ${money(estimate.travelFeeCents)}` : ""}</p>
       ${estimate.status === "draft" ? `<div class="row" style="margin-top:10px"><button class="primary" type="button" data-action="accept-estimate" data-id="${esc(estimate.id)}">Accept price</button><button class="secondary" type="button" data-action="decline-estimate" data-id="${esc(estimate.id)}">Decline</button></div>` : ""}
     </section>`;
 }

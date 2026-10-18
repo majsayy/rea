@@ -5,8 +5,9 @@ import type { Ctx } from "./context.ts";
 import { activeJobForContact } from "../domain/jobStatus.ts";
 import { AppError } from "../domain/errors.ts";
 import { normalizePhone } from "../domain/normalize.ts";
-import { DEFAULT_TEMPLATES, renderTemplate, type TemplateKey } from "../domain/templates.ts";
-import { formatDenver } from "../domain/time.ts";
+import { quietHoursDecision, type QuietDecision } from "../domain/quietHours.ts";
+import { assertNoEmDash, DEFAULT_TEMPLATES, renderTemplate, type TemplateKey } from "../domain/templates.ts";
+import { denverDateKey, formatDenver, isDenverSunday } from "../domain/time.ts";
 import type { Address, Customer, CustomerMessage, Job, MessageTemplate } from "../domain/types.ts";
 import type { IncomingMessage } from "../ghl/parse.ts";
 import { cleanMultiline, cleanText } from "./validate.ts";
@@ -65,6 +66,7 @@ export async function notifyPhotos(ctx: Ctx, target: NotifyTarget, actor: Actor)
 
 export async function sendManualMessage(ctx: Ctx, target: NotifyTarget, actor: Actor, body: unknown): Promise<CustomerMessage> {
   if (!isPlainRecord(body)) throw new AppError("invalid_field", "Message text is required.", 400);
+  assertSundayReplyAllowed(ctx, target.customer.id);
   const text = cleanMultiline(body.body, "Message", 1000);
   const supplied = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
   const key = supplied
@@ -126,7 +128,9 @@ export function saveTemplates(ctx: Ctx, body: unknown): MessageTemplate[] {
     const existing = current.get(item.key);
     if (!existing) throw new AppError("invalid_field", `Unknown template ${item.key}.`, 400);
     const text = cleanMultiline(item.body, "Template", 1000);
+    assertNoEmDash(text, "Template");
     const subject = existing.channel === "email" ? cleanText(item.subject ?? existing.subject ?? "Super Cleaning Bros", "Subject", 140) : null;
+    if (subject) assertNoEmDash(subject, "Subject");
     ctx.store.saveTemplate({ key: existing.key, channel: existing.channel, subject, body: text });
   }
   return listTemplates(ctx);
@@ -156,6 +160,18 @@ async function sendTemplate(
   });
 }
 
+export async function releaseHeldMessages(ctx: Ctx): Promise<number> {
+  const due = ctx.store.listHeldDue(ctx.store.now().toISOString());
+  let released = 0;
+  for (const pending of due) {
+    const claimed = ctx.store.claimHeld(pending.id);
+    if (!claimed) continue;
+    await sendClaimed(ctx, claimed);
+    released += 1;
+  }
+  return released;
+}
+
 async function deliver(
   ctx: Ctx,
   target: NotifyTarget,
@@ -169,6 +185,7 @@ async function deliver(
   },
 ): Promise<CustomerMessage | null> {
   const channel = chooseChannel(ctx, target.customer, input.channel, input.emailOnly);
+  const quiet = quietDecision(ctx, target, input.trigger, channel.channel);
   const claim = ctx.store.claimMessage({
     jobId: target.job.id,
     customerId: target.customer.id,
@@ -181,6 +198,18 @@ async function deliver(
     trigger: input.trigger,
   });
   if (!claim.proceed) return claim.message;
+  if (quiet.kind === "skip") {
+    ctx.store.completeMessage(claim.message.id, "skipped", {
+      ghlMessageId: null,
+      ghlConversationId: null,
+      detail: quiet.detail,
+    });
+    return reload(ctx, claim.message.id);
+  }
+  if (quiet.kind === "hold") {
+    ctx.store.markHeld(claim.message.id, quiet.sendAfter);
+    return reload(ctx, claim.message.id);
+  }
   if (!ctx.ghl || !target.customer.ghlContactId) {
     ctx.store.completeMessage(claim.message.id, "skipped", {
       ghlMessageId: null,
@@ -197,36 +226,78 @@ async function deliver(
     });
     return reload(ctx, claim.message.id);
   }
+  await sendClaimed(ctx, {
+    ...claim.message,
+    channel: channel.channel,
+    body: input.body,
+    subject: input.subject,
+  });
+  return reload(ctx, claim.message.id);
+}
+
+async function sendClaimed(ctx: Ctx, message: CustomerMessage): Promise<void> {
+  const customer = ctx.store.getCustomer(message.customerId);
+  if (!ctx.ghl || !customer?.ghlContactId) {
+    ctx.store.completeMessage(message.id, "skipped", {
+      ghlMessageId: null,
+      ghlConversationId: null,
+      detail: ctx.ghl ? "no_ghl_contact" : "ghl_not_configured",
+    });
+    return;
+  }
   try {
     const sent = await ctx.ghl.sendConversationMessage({
-      contactId: target.customer.ghlContactId,
-      channel: channel.channel,
-      message: input.body,
-      subject: input.subject,
+      contactId: customer.ghlContactId,
+      channel: message.channel,
+      message: message.body,
+      subject: message.subject,
       emailFrom: ctx.config.ghl.emailFrom,
     });
-    await ctx.ghl.addNote(target.customer.ghlContactId, input.body);
-    if (input.trigger === "photos" && ctx.config.ghl.photoLinkFieldId && target.job.shareToken) {
-      await ctx.ghl.setCustomField(
-        target.customer.ghlContactId,
-        ctx.config.ghl.photoLinkFieldId,
-        photoPageUrl(ctx, target.job.shareToken),
-      );
+    await ctx.ghl.addNote(customer.ghlContactId, message.body);
+    if (message.trigger === "photos") {
+      const job = ctx.store.getJob(message.jobId);
+      if (ctx.config.ghl.photoLinkFieldId && job?.shareToken) {
+        await ctx.ghl.setCustomField(customer.ghlContactId, ctx.config.ghl.photoLinkFieldId, photoPageUrl(ctx, job.shareToken));
+      }
     }
-    ctx.store.completeMessage(claim.message.id, "sent", {
+    ctx.store.completeMessage(message.id, "sent", {
       ghlMessageId: sent.messageId,
       ghlConversationId: sent.conversationId,
       detail: null,
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : "GoHighLevel did not send the message";
-    ctx.store.completeMessage(claim.message.id, "failed", {
+    ctx.store.completeMessage(message.id, "failed", {
       ghlMessageId: null,
       ghlConversationId: null,
       detail,
     });
   }
-  return reload(ctx, claim.message.id);
+}
+
+function quietDecision(ctx: Ctx, target: NotifyTarget, trigger: string, channel: "sms" | "email"): QuietDecision {
+  if (channel !== "sms" || trigger === "manual") return { kind: "send" };
+  return quietHoursDecision({
+    now: ctx.store.now(),
+    trigger,
+    scheduledStart: target.job.unscheduled ? null : target.job.scheduledStart,
+    releaseTime: ctx.config.mondayTextReleaseTime,
+  });
+}
+
+function assertSundayReplyAllowed(ctx: Ctx, customerId: string): void {
+  const now = ctx.store.now();
+  if (!isDenverSunday(now)) return;
+  const today = denverDateKey(now);
+  const customerTexted = ctx.store.listMessagesForCustomer(customerId).some((message) => {
+    return message.direction === "inbound" && denverDateKey(new Date(message.createdAt)) === today;
+  });
+  if (customerTexted) return;
+  throw new AppError(
+    "sunday_quiet",
+    "Sunday texts wait until Monday unless this customer already texted today.",
+    409,
+  );
 }
 
 function chooseChannel(

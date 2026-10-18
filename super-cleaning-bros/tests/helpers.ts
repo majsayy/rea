@@ -94,6 +94,7 @@ export function app(options?: {
   ghl?: GhlClient | null;
   payments?: PaymentProvider;
   env?: NodeJS.ProcessEnv;
+  now?: () => Date;
 }) {
   const ghl = options && "ghl" in options ? options.ghl ?? null : new RecordingGhl();
   const payments = options?.payments ?? new RecordingPayments();
@@ -112,7 +113,7 @@ export function app(options?: {
     config,
     ghl,
     payments,
-    now: () => new Date("2026-10-14T15:00:00.000Z"),
+    now: options?.now ?? (() => new Date("2026-10-14T15:00:00.000Z")),
     id: () => `id_${++sequence}`,
   });
   return { ...built, ghl: ghl as RecordingGhl, payments: payments as RecordingPayments, config };

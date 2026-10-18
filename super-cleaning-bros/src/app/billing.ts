@@ -227,8 +227,8 @@ function invoiceLines(
 ) {
   const sum = lineItems.reduce((total, item) => total + item.amountCents, 0);
   const service = lineItems.length > 0 && sum === serviceCents ? lineItems : [{ description: title, amountCents: serviceCents }];
-  if (travelFeeCents > 0) {
-    return [...service, { description: "Travel fee (more than 30 minutes from Erie)", amountCents: travelFeeCents }];
-  }
-  return service;
+  if (travelFeeCents <= 0) return service;
+  const [first, ...rest] = service;
+  if (!first) return [{ description: title, amountCents: serviceCents + travelFeeCents }];
+  return [{ description: first.description, amountCents: first.amountCents + travelFeeCents }, ...rest];
 }

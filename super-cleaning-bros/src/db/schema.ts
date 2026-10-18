@@ -225,6 +225,8 @@ export function migrate(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS audit_log_job ON audit_log(job_id, created_at);
   `);
+  addColumn(db, "ALTER TABLE messages ADD COLUMN send_after TEXT");
+  db.exec(`CREATE INDEX IF NOT EXISTS messages_held ON messages(status, send_after);`);
 }
 
 function addColumn(db: DatabaseSync, sql: string): void {

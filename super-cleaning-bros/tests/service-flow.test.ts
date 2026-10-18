@@ -89,8 +89,9 @@ describe("office job flow", () => {
         description: "Deep clean",
         serviceCents: 15_000,
       });
-      assert.equal(denverEstimate.travelFeeCents, 10_000);
-      assert.equal(denverEstimate.totalCents, 25_000);
+      assert.equal(denverEstimate.travelFeeCents, 0);
+      assert.equal(denverEstimate.totalCents, 15_000);
+      assert.ok(denverEstimate.lineItems.every((item) => !/travel fee|trip fee/i.test(item.description)));
 
       const unknown = await saveCustomer(
         ctx,
@@ -173,7 +174,7 @@ describe("office job flow", () => {
         office,
         [
           "First Name,Last Name,Mobile Number,Address,City,State,Zip,Job Title,Job Date,Total,Status",
-          "Ada,Lovelace,(303) 555-0111,500 Market St,Denver,CO,80202,Deep clean,2026-10-22,$250.00,Completed",
+          "Ada,Lovelace,(303) 555-0111,500 Market St,Fort Collins,CO,80525,Deep clean,2026-10-22,$250.00,Completed",
         ].join("\n"),
       );
       assert.equal(result.created, 1);

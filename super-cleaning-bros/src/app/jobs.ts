@@ -5,7 +5,7 @@ import { AppError, isRecord } from "../domain/errors.ts";
 import { isJobStatus, NEXT_STATUS } from "../domain/jobStatus.ts";
 import { assertCents, formatCents } from "../domain/money.ts";
 import { applyAcceptedPrice } from "../domain/pricing.ts";
-import { splitAcceptedTotal, travelFeeForMinutes } from "../domain/travel.ts";
+import { splitAcceptedTotal, travelFeeForMiles } from "../domain/travel.ts";
 import { parseAppTime } from "../domain/time.ts";
 import type { Actor } from "./actors.ts";
 import { assertOffice, authorName } from "./actors.ts";
@@ -377,7 +377,7 @@ async function priceNewJob(
     };
   }
   const drive = await ctx.driveTime.estimate(address);
-  const travel = travelFeeForMinutes(drive.minutes, ctx.config.travel);
+  const travel = travelFeeForMiles(drive.distanceMiles, ctx.config.travel);
   if (input.lockedTotalCents !== null) {
     const split = splitAcceptedTotal(input.lockedTotalCents, travel.reviewRequired ? 0 : travel.feeCents);
     return {
@@ -410,7 +410,7 @@ async function priceNewJob(
   if (!quoted.priceLocked && travel.reviewRequired) {
     throw new AppError(
       "travel_review_required",
-      "Drive time from Erie is unknown. Set a map pin or ZIP before scheduling, or start from an accepted estimate.",
+      "Distance from Erie is unknown. Set a map pin or ZIP before scheduling, or start from an accepted estimate.",
       409,
     );
   }
